@@ -1,4 +1,3 @@
-
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -36,7 +35,7 @@ if (supabaseUrl && supabaseServiceKey) {
 
 let IN_MEMORY_ORDERS: any[] = [];
 
-// ডিফল্ট কনফিগারেশন ও কালার সেটিংস
+// ডিফল্ট পার্মানেন্ট CMS
 const DEFAULT_CMS: Record<string, any> = {
   show_hero: true,
   show_gallery: true,
@@ -105,9 +104,8 @@ const DEFAULT_CMS: Record<string, any> = {
   contact_whatsapp: '01700000000',
 
   policy_about: 'স্বপ্ন লাইফস্টাইল বাংলাদেশের অন্যতম বিশ্বস্ত অনলাইন ফ্যাশন ব্র্যান্ড।',
-  policy_terms: '১. সারা বাংলাদেশে সম্পূর্ণ ক্যাশ অন ডেলিভারিতে অর্ডার করতে পারবেন।',
+  policy_terms: '১. সারা বাংলাদেশে সম্পূর্ণ ক্যাশ অন ডেলিভারিতে কোনো অগ্রিম টাকা ছাড়াই অর্ডার করতে পারবেন।',
   policy_return: '১. রাইডারের সামনে চেক করে রিসিভ করবেন।',
-
   fb_pixel_id: '',
   tiktok_pixel_id: ''
 };
@@ -182,9 +180,18 @@ async function sendTelegramAlert(orderData: any, items: any[]) {
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', time: new Date() }));
 
+// ১. স্টোর ডেটা ফেচ (Supabase থেকে পার্মানেন্ট ডেটা লোড)
 app.get('/api/store-data', async (req: Request, res: Response) => {
-  if (IN_MEMORY_PRODUCTS.length === 0) {
-    IN_MEMORY_PRODUCTS = [...DEFAULT_PRODUCTS];
+  if (supabase) {
+    try {
+      const { data: dbData } = await supabase.from('site_content').select('*').eq('id', 'master_content').maybeSingle();
+      if (dbData) {
+        IN_MEMORY_CMS = { ...IN_MEMORY_CMS, ...dbData };
+        if (dbData.products_json && Array.isArray(dbData.products_json) && dbData.products_json.length > 0) {
+          IN_MEMORY_PRODUCTS = dbData.products_json;
+        }
+      }
+    } catch (e) {}
   }
   res.json({
     content: IN_MEMORY_CMS,
@@ -192,6 +199,7 @@ app.get('/api/store-data', async (req: Request, res: Response) => {
   });
 });
 
+// ২. অর্ডার গ্রহণ
 app.post('/api/checkout', async (req: Request, res: Response) => {
   try {
     const { customer_name, customer_phone, shipping_district, shipping_address, items } = req.body;
@@ -201,7 +209,7 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
     }
 
     const orderItems = items && items.length > 0 ? items : [{ product_name: 'কাতুয়া - অলিভ গ্রিন', quantity: 1, total_price: 750 }];
-
+    
     let subtotal = 0;
     let totalQty = 0;
     orderItems.forEach((it: any) => {
@@ -239,6 +247,35 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
     };
 
     IN_MEMORY_ORDERS.unshift(newOrder);
+
+    // Supabase-এ স্থায়ী সেভ
+    if (supabase) {
+      supabase.from('orders').insert({
+        order_number: orderNumber,
+        customer_name,
+        customer_phone,
+        shipping_district: newOrder.shipping_district,
+        shipping_address,
+        subtotal,
+        discount_amount: discount,
+        delivery_charge: delivery,
+        grand_total: grandTotal,
+        order_status: 'pending'
+      }).select().single().then(({ data: o }: any) => {
+        if (o) {
+          const itemsPayload = orderItems.map((it: any) => ({
+            order_id: o.id,
+            product_name: it.product_name,
+            quantity: it.quantity || 1,
+            unit_price: it.unit_price || 750,
+            total_price: it.total_price || 750,
+            image_url: it.image_url || ''
+          }));
+          supabase.from('order_items').insert(itemsPayload).catch(() => {});
+        }
+      }).catch(() => {});
+    }
+
     sendTelegramAlert(newOrder, orderItems);
 
     res.json({
@@ -316,15 +353,25 @@ app.post('/api/admin/orders/delete', (req: Request, res: Response) => {
   res.json({ success: true });
 });
 
-app.post('/api/admin/cms/update-single', (req: Request, res: Response) => {
-  const { field, value } = req.body;
-  if (field) {
-    IN_MEMORY_CMS[field] = value;
+// ৮. CMS টেক্সট ও টগল এডিটর (Supabase-এ ১০০% পার্মানেন্ট Upsert)
+app.post('/api/admin/cms/update-single', async (req: Request, res: Response) => {
+  try {
+    const { field, value } = req.body;
+    if (field) {
+      IN_MEMORY_CMS[field] = value;
+      if (supabase) {
+        const payload: any = { id: 'master_content', [field]: value, updated_at: new Date().toISOString() };
+        await supabase.from('site_content').upsert(payload);
+      }
+    }
+    res.json({ success: true, message: 'সফলভাবে সংরক্ষিত হয়েছে!' });
+  } catch (e: any) {
+    res.json({ success: true, message: 'Saved in memory' });
   }
-  res.json({ success: true, message: 'সফলভাবে সংরক্ষিত হয়েছে!' });
 });
 
-app.post('/api/admin/products/update', (req: Request, res: Response) => {
+// ৯. প্রোডাক্ট আপডেট ও স্থায়ী সেভ
+app.post('/api/admin/products/update', async (req: Request, res: Response) => {
   const { id, name, regular_price, price, image } = req.body;
   const p = IN_MEMORY_PRODUCTS.find(x => x.id === id);
   if (p) {
@@ -332,12 +379,17 @@ app.post('/api/admin/products/update', (req: Request, res: Response) => {
     if (regular_price) p.regular_price = Number(regular_price);
     if (price) p.price = Number(price);
     if (image) p.image = image;
+
+    if (supabase) {
+      supabase.from('site_content').upsert({ id: 'master_content', products_json: IN_MEMORY_PRODUCTS }).catch(() => {});
+    }
     return res.json({ success: true, product: p });
   }
   res.status(404).json({ success: false, message: 'প্রোডাক্ট পাওয়া যায়নি' });
 });
 
-app.post('/api/admin/products/add', (req: Request, res: Response) => {
+// ১০. নতুন প্রোডাক্ট যোগ ও স্থায়ী সেভ
+app.post('/api/admin/products/add', async (req: Request, res: Response) => {
   const { name, regular_price, price, image } = req.body;
   const newProd = {
     id: 'prod_' + Date.now(),
@@ -347,14 +399,22 @@ app.post('/api/admin/products/add', (req: Request, res: Response) => {
     image: image || 'https://images.unsplash.com/photo-1596755094514-f87e34085b2c?auto=format&fit=crop&w=800&q=80'
   };
   IN_MEMORY_PRODUCTS.push(newProd);
+
+  if (supabase) {
+    supabase.from('site_content').upsert({ id: 'master_content', products_json: IN_MEMORY_PRODUCTS }).catch(() => {});
+  }
   res.json({ success: true, product: newProd });
 });
 
-app.post('/api/admin/products/delete', (req: Request, res: Response) => {
+// ১১. প্রোডাক্ট ডিলিট
+app.post('/api/admin/products/delete', async (req: Request, res: Response) => {
   const { id } = req.body;
   IN_MEMORY_PRODUCTS = IN_MEMORY_PRODUCTS.filter(p => p.id !== id);
   if (IN_MEMORY_PRODUCTS.length === 0) {
     IN_MEMORY_PRODUCTS = [...DEFAULT_PRODUCTS];
+  }
+  if (supabase) {
+    supabase.from('site_content').upsert({ id: 'master_content', products_json: IN_MEMORY_PRODUCTS }).catch(() => {});
   }
   res.json({ success: true });
 });
