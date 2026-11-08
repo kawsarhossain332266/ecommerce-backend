@@ -18,24 +18,8 @@ const telegramChatId = process.env.TELEGRAM_CHAT_ID || '';
 
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-const DEFAULT_IMAGES = {
-  olive: 'https://images.unsplash.com/photo-1596755094514-f87e34085b2c?auto=format&fit=crop&w=800&q=80',
-  blue: 'https://images.unsplash.com/photo-1507679799987-c73779587ccf?auto=format&fit=crop&w=800&q=80',
-  pink: 'https://images.unsplash.com/photo-1617137984095-74e4e5e3613f?auto=format&fit=crop&w=800&q=80',
-  maroon: 'https://images.unsplash.com/photo-1598033129183-c4f50c736f10?auto=format&fit=crop&w=800&q=80'
-};
-
-function getExactPhotoForItem(item: any): string {
-  if (item.image_url && String(item.image_url).startsWith('http')) return item.image_url;
-  const name = String(item.product_name || '').toLowerCase();
-  if (name.includes('blue') || name.includes('রয়েল') || name.includes('রয়েল')) return DEFAULT_IMAGES.blue;
-  if (name.includes('pink') || name.includes('পিংক')) return DEFAULT_IMAGES.pink;
-  if (name.includes('maroon') || name.includes('মেরুন') || name.includes('রেড')) return DEFAULT_IMAGES.maroon;
-  return DEFAULT_IMAGES.olive;
-}
-
-// নির্ভরযোগ্য টেলিগ্রাম প্রেরক
-async function sendTelegramAlert(orderData: any, items: any[]): Promise<any> {
+// ফটো এলার্ট
+async function dispatchTelegramAlert(orderData: any, items: any[]): Promise<any> {
   if (!telegramBotToken || !telegramChatId) return;
 
   let itemList = '';
@@ -53,7 +37,7 @@ async function sendTelegramAlert(orderData: any, items: any[]): Promise<any> {
     `💰 <b>সর্বমোট বিল:</b> <b>${orderData.grand_total} ৳</b>\n` +
     `💳 <b>পেমেন্ট:</b> ক্যাশ অন ডেলিভারি (COD)`;
 
-  const photos = Array.from(new Set(items.map(getExactPhotoForItem)));
+  const photos = Array.from(new Set(items.map((it: any) => it.image_url || 'https://images.unsplash.com/photo-1596755094514-f87e34085b2c?auto=format&fit=crop&w=800&q=80')));
 
   if (photos.length > 1) {
     try {
@@ -77,12 +61,7 @@ async function sendTelegramAlert(orderData: any, items: any[]): Promise<any> {
     return await fetch(`https://api.telegram.org/bot${telegramBotToken}/sendPhoto`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: telegramChatId,
-        photo: photos[0] || DEFAULT_IMAGES.olive,
-        caption,
-        parse_mode: 'HTML'
-      })
+      body: JSON.stringify({ chat_id: telegramChatId, photo: photos[0], caption, parse_mode: 'HTML' })
     });
   } catch (err) {
     return await fetch(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
@@ -93,46 +72,39 @@ async function sendTelegramAlert(orderData: any, items: any[]): Promise<any> {
   }
 }
 
-// ================= PUBLIC API ENDPOINTS =================
+// ================= API ENDPOINTS =================
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }));
 
-// ১. পাবলিক সাইটের সমস্ত ডাইনামিক ডেটা লোড
+// ১. সম্পূর্ণ ওয়েবসাইট ও অ্যাডমিন CMS ডেটা লোড
 app.get('/api/store-data', async (req: Request, res: Response) => {
   try {
-    const [cmsRes, pixelsRes] = await Promise.all([
-      supabase.from('website_cms').select('*').limit(1).maybeSingle(),
-      supabase.from('tracking_pixels').select('*').limit(1).maybeSingle()
-    ]);
-
-    res.json({
-      cms: cmsRes.data || {},
-      pixels: pixelsRes.data || {}
-    });
+    const { data: content, error } = await supabase.from('site_content').select('*').eq('id', 'master_content').maybeSingle();
+    if (error) throw error;
+    res.json({ content: content || {} });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// ২. অর্ডার সাবমিশন (ডাটাবেস ও টেলিগ্রাম শতভাগ নিশ্চিত)
+// ২. অর্ডার গ্রহণ ও ডাটাবেসে নিশ্চিত সংরক্ষণ
 app.post('/api/checkout', async (req: Request, res: Response) => {
   try {
     const { customer_name, customer_phone, shipping_district, shipping_address, items } = req.body;
 
     if (!customer_name || !customer_phone || !shipping_address) {
-      return res.status(400).json({ error: 'সকল প্রয়োজনীয় তথ্য প্রদান করুন।' });
+      return res.status(400).json({ error: 'সব প্রয়োজনীয় তথ্য প্রদান করুন।' });
     }
 
-    const orderItems = items && items.length > 0 ? items : [{ product_name: 'কাতুয়া - অলিভ গ্রিন (L)', quantity: 1, total_price: 750 }];
-
-    let rawSubtotal = 0;
+    const orderItems = items && items.length > 0 ? items : [{ product_name: 'কাতুয়া - অলিভ গ্রিন (L)', quantity: 1, total_price: 750, image_url: '' }];
+    
+    let subtotal = 0;
     let totalQty = 0;
     orderItems.forEach((it: any) => {
-      rawSubtotal += Number(it.total_price || 750);
+      subtotal += Number(it.total_price || 750);
       totalQty += Number(it.quantity || 1);
     });
 
-    // কম্বো ছাড় ও ডেলিভারি হিসাব
     let discount = 0;
     const isDhaka = String(shipping_district).toLowerCase().includes('dhaka') || String(shipping_district).includes('ঢাকা');
     let delivery = isDhaka ? 80 : 150;
@@ -143,43 +115,44 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
       delivery = 0;
     }
 
-    const grandTotal = Math.max(0, rawSubtotal - discount + delivery);
+    const grandTotal = Math.max(0, subtotal - discount + delivery);
     const orderNumber = 'SO-' + Math.floor(1000 + Math.random() * 9000);
 
-    const orderData = {
+    const orderRecord = {
       order_number: orderNumber,
       customer_name,
       customer_phone,
       shipping_district: isDhaka ? 'ঢাকা' : 'ঢাকার বাইরে',
       shipping_address,
-      subtotal: rawSubtotal,
+      subtotal,
       discount_amount: discount,
       delivery_charge: delivery,
       grand_total: grandTotal,
       order_status: 'pending'
     };
 
-    // ১. নিশ্চিতভাবে ডাটাবেসে অর্ডার সেভ
-    const { data: dbOrder, error: dbError } = await supabase.from('orders').insert(orderData).select().single();
+    // ডাটাবেসে ইনসার্ট
+    const { data: dbOrder, error: dbError } = await supabase.from('orders').insert(orderRecord).select().single();
     if (dbError) {
       console.error('Supabase DB Insert Error:', dbError);
+      throw dbError;
     }
 
     if (dbOrder) {
-      const itemsToInsert = orderItems.map((it: any) => ({
+      const itemsPayload = orderItems.map((it: any) => ({
         order_id: dbOrder.id,
         product_name: it.product_name,
         size: it.size || 'L',
         quantity: it.quantity || 1,
         unit_price: it.unit_price || 750,
         total_price: it.total_price || 750,
-        image_url: getExactPhotoForItem(it)
+        image_url: it.image_url || ''
       }));
-      await supabase.from('order_items').insert(itemsToInsert);
+      await supabase.from('order_items').insert(itemsPayload);
     }
 
-    // ২. টেলিগ্রামে ছবিসহ অর্ডার এলার্ট
-    sendTelegramAlert(orderData, orderItems);
+    // টেলিগ্রামে নোটিফিকেশন
+    dispatchTelegramAlert(orderRecord, orderItems);
 
     res.json({
       success: true,
@@ -187,14 +160,35 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
       grand_total: grandTotal
     });
   } catch (error: any) {
-    console.error('Checkout Error:', error);
+    console.error('Order Submission Error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// ================= ADMIN DASHBOARD API (COMPLETE CRUD) =================
+// ================= ADMIN DASHBOARD API =================
 
-// ১. মেট্রিকস (ড্যাশবোর্ড কার্ডস)
+// ৩. অ্যাডমিনের জন্য সব অর্ডার ফেচ
+app.get('/api/admin/orders', async (req: Request, res: Response) => {
+  try {
+    const { status, search } = req.query;
+    let query = supabase.from('orders').select('*, order_items(*)').order('created_at', { ascending: false });
+
+    if (status && status !== 'all') {
+      query = query.eq('order_status', status);
+    }
+    if (search) {
+      query = query.or(`customer_name.ilike.%${search}%,customer_phone.ilike.%${search}%,order_number.ilike.%${search}%`);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+    res.json({ orders: data || [] });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ৪. অ্যাডমিন মেট্রিকস
 app.get('/api/admin/metrics', async (req: Request, res: Response) => {
   try {
     const { data: orders } = await supabase.from('orders').select('*');
@@ -212,29 +206,7 @@ app.get('/api/admin/metrics', async (req: Request, res: Response) => {
   }
 });
 
-// ২. সম্পূর্ণ অর্ডার তালিকা ফেচ (ফিল্টার ও সার্চ সহ)
-app.get('/api/admin/orders', async (req: Request, res: Response) => {
-  try {
-    const { status, search } = req.query;
-    let query = supabase.from('orders').select('*, order_items(*)').order('created_at', { ascending: false });
-
-    if (status && status !== 'all') {
-      query = query.eq('order_status', status);
-    }
-
-    if (search) {
-      query = query.or(`customer_name.ilike.%${search}%,customer_phone.ilike.%${search}%,order_number.ilike.%${search}%`);
-    }
-
-    const { data, error } = await query;
-    if (error) throw error;
-    res.json({ orders: data || [] });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ৩. অর্ডার স্ট্যাটাস আপডেট
+// ৫. অর্ডার স্ট্যাটাস আপডেট
 app.post('/api/admin/orders/update-status', async (req: Request, res: Response) => {
   try {
     const { order_id, status } = req.body;
@@ -246,7 +218,7 @@ app.post('/api/admin/orders/update-status', async (req: Request, res: Response) 
   }
 });
 
-// ৪. অর্ডার ডিলিট
+// ৬. অর্ডার ডিলিট
 app.post('/api/admin/orders/delete', async (req: Request, res: Response) => {
   try {
     const { order_id } = req.body;
@@ -257,33 +229,17 @@ app.post('/api/admin/orders/delete', async (req: Request, res: Response) => {
   }
 });
 
-// ৫. CMS সম্পূর্ণ কন্টেন্ট আপডেট
-app.post('/api/admin/cms/update', async (req: Request, res: Response) => {
+// ৭. CMS-এর নির্দিষ্ট টেক্সট বা ফিল্ড আপডেট (Pencil Edit Sync)
+app.post('/api/admin/cms/update-single', async (req: Request, res: Response) => {
   try {
-    const payload = req.body;
-    const { data: existing } = await supabase.from('website_cms').select('id').limit(1).maybeSingle();
-    if (existing) {
-      await supabase.from('website_cms').update(payload).eq('id', existing.id);
-    } else {
-      await supabase.from('website_cms').insert(payload);
-    }
-    res.json({ success: true, message: 'কন্টেন্ট সফলভাবে আপডেট হয়েছে!' });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
-});
+    const { field, value } = req.body;
+    const updateObj: Record<string, any> = {};
+    updateObj[field] = value;
+    updateObj['updated_at'] = new Date().toISOString();
 
-// ৬. পিক্সেল কনফিগারেশন আপডেট
-app.post('/api/admin/pixels/update', async (req: Request, res: Response) => {
-  try {
-    const payload = req.body;
-    const { data: existing } = await supabase.from('tracking_pixels').select('id').limit(1).maybeSingle();
-    if (existing) {
-      await supabase.from('tracking_pixels').update(payload).eq('id', existing.id);
-    } else {
-      await supabase.from('tracking_pixels').insert(payload);
-    }
-    res.json({ success: true, message: 'Pixel সেটিংস সংরক্ষিত হয়েছে!' });
+    const { error } = await supabase.from('site_content').update(updateObj).eq('id', 'master_content');
+    if (error) throw error;
+    res.json({ success: true, message: 'সফলভাবে সংরক্ষিত হয়েছে!' });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
