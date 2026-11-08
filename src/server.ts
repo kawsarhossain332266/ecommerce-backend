@@ -8,17 +8,11 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// সর্বাধুনিক ওপেন CORS সেটিংস (যাতে ব্রাউজার কোনো রিকোয়েস্ট ব্লক না করে)
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
-}));
-app.options('*', cors());
+app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '10mb' }));
 
-// স্মার্ট URL ক্লিনার
-function getCleanUrl(): string {
+// Supabase URL ফরম্যাট ক্লিনার
+function cleanUrl(): string {
   let u = (process.env.SUPABASE_URL || '').trim();
   u = u.replace(/\/+$/, '').replace(/\/rest\/v1\/?$/, '');
   const m = u.match(/project\/([a-z0-9]+)/i);
@@ -26,7 +20,7 @@ function getCleanUrl(): string {
   return u;
 }
 
-const supabaseUrl = getCleanUrl();
+const supabaseUrl = cleanUrl();
 const supabaseServiceKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
 const telegramBotToken = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
 const telegramChatId = (process.env.TELEGRAM_CHAT_ID || '').trim();
@@ -35,21 +29,18 @@ let supabase: any = null;
 if (supabaseUrl && supabaseServiceKey) {
   try {
     supabase = createClient(supabaseUrl, supabaseServiceKey);
-  } catch (e) {
-    console.warn('Supabase offline, using local engine');
-  }
+  } catch (e) {}
 }
 
-// ================= সেন্ট্রাল রিয়েল-টাইম ডেটাবেস =================
-let MASTER_ORDERS: any[] = [];
+// অর্ডার স্টোরেজ
+let ORDERS_LIST: any[] = [];
 
-let MASTER_CMS: Record<string, any> = {
-  // হেডার ও স্টোর নাম
+// ডিফল্ট ওয়েবসাইট কনটেন্ট (হেডার নাম ও সাইজ চার্ট সহ)
+let CMS_CONTENT: Record<string, any> = {
   store_name: 'স্বপ্ন লাইফস্টাইল',
   store_tagline: 'Premium Menswear Brand',
   header_btn_text: 'অর্ডার করুন 👉',
 
-  // হিরো সেকশন
   hero_headline: 'প্রিমিয়াম কোয়ালিটির স্টাইলিশ কাতুয়া',
   hero_discount_badge: '🔥 ৩০% ডিসকাউন্ট সীমিত সময়ের জন্য 🔥',
   hero_subtitle: 'আমাদের এই স্টাইলিশ ফিট ও আকর্ষণীয় কাতুয়াটিতে পাবেন স্টাইল, কমফোর্ট এবং কোয়ালিটি — সব একসাথে!',
@@ -58,7 +49,6 @@ let MASTER_CMS: Record<string, any> = {
   timer_minutes: 12,
   timer_seconds: 30,
 
-  // সাইজ চার্ট
   size_section_title: 'সাইজ মেজারমেন্ট (Size Chart)',
   size_section_subtitle: 'আপনার সঠিক বডি মেজারমেন্ট দেখে সাইজ বেছে নিন',
   size_m_len: '28"', size_m_chest: '40"',
@@ -66,25 +56,19 @@ let MASTER_CMS: Record<string, any> = {
   size_xl_len: '30"', size_xl_chest: '44"',
   size_xxl_len: '31"', size_xxl_chest: '46"',
 
-  // কম্বো অফার কার্ডস
-  combo_section_title: 'বেশি নিলে বেশি সাশ্রয়!',
-  combo_section_badge: 'স্পেশাল কম্বো অফার',
-  combo_section_sub: 'একের অধিক অর্ডারে পান সরাসরি ক্যাশ ডিসকাউন্ট ও ফ্রি হোম ডেলিভারি',
-  
   combo2_badge: '২ পিস প্যাকেজ',
-  combo2_title: 'দুই পিস প্যাকেজ রেট (ডাবল কম্বো সেভার)',
+  combo2_title: 'ডাবল কম্বো সেভার (২ পিস প্যাকেজ রেট)',
   combo2_reg_price: '৳ ১৫০০',
   combo2_offer_price: '৳ ১৪০০',
   combo2_discount_tag: '✓ আপনি সরাসরি সেভ করছেন ১০০ টাকা!',
 
   combo3_badge: '৩ পিস মেগা সেভার',
-  combo3_title: 'তিন পিস মেগা প্যাকেজ রেট (মেগা ফ্যামিলি কম্বো)',
+  combo3_title: 'মেগা ফ্যামিলি কম্বো (তিন পিস মেগা প্যাকেজ রেট)',
   combo3_reg_price: '৳ ২২৫০',
   combo3_offer_price: '৳ ২০০০',
   combo3_discount_tag: '✓ ২৫০ টাকা ক্যাশ ডিসকাউন্ট',
   combo3_delivery_tag: '🚚 ডেলিভারি সম্পূর্ণ ফ্রি!',
 
-  // স্পেসিফিকেশন
   spec_section_title: 'প্রোডাক্ট স্পেসিফিকেশন',
   spec_item_1: '১০০% পিওর কটন ফেব্রিক দিয়ে তৈরি।',
   spec_item_2: 'অত্যন্ত নরম, আরামদায়ক ও ব্রিদেবল।',
@@ -92,11 +76,9 @@ let MASTER_CMS: Record<string, any> = {
   spec_item_4: 'প্রিমিয়াম সুতার নিখুঁত এমব্রয়ডারি ও আফসান প্রিন্ট।',
   spec_item_5: 'দৈনন্দিন ব্যবহার এবং যেকোনো অনুষ্ঠানের জন্য সেরা চয়েস।',
 
-  // ডেলিভারি সেটিংস (৬০ ও ১২০ টাকা)
   del_inside_charge: 60,
   del_outside_charge: 120,
 
-  // অফিস ও পলিসি
   office_address: 'শপ-২৩০, এমডি প্লাজা, মোহাম্মদপুর, ঢাকা-১২০৭, বাংলাদেশ।',
   contact_phone: '01700000000',
   contact_whatsapp: '01700000000',
@@ -106,15 +88,15 @@ let MASTER_CMS: Record<string, any> = {
   policy_return: 'ডেলিভারি রাইডারের সামনে চেক করে রিসিভ করবেন। পছন্দ না হলে রিটার্ন করতে পারবেন।'
 };
 
-let MASTER_PRODUCTS: any[] = [
+let PRODUCTS_LIST: any[] = [
   { id: 'p_1', name: 'কাতুয়া - অলিভ গ্রিন', regular_price: 1050, price: 750, image: 'https://images.unsplash.com/photo-1596755094514-f87e34085b2c?auto=format&fit=crop&w=800&q=80' },
   { id: 'p_2', name: 'কাতুয়া - রয়েল ব্লু', regular_price: 1050, price: 750, image: 'https://images.unsplash.com/photo-1507679799987-c73779587ccf?auto=format&fit=crop&w=800&q=80' },
   { id: 'p_3', name: 'কাতুয়া - লাইট পিংক', regular_price: 1050, price: 750, image: 'https://images.unsplash.com/photo-1617137984095-74e4e5e3613f?auto=format&fit=crop&w=800&q=80' },
   { id: 'p_4', name: 'কাতুয়া - মেরুন রেড', regular_price: 1050, price: 750, image: 'https://images.unsplash.com/photo-1598033129183-c4f50c736f10?auto=format&fit=crop&w=800&q=80' }
 ];
 
-// টেলিগ্রাম ফটো অ্যালার্ট
-async function triggerTelegram(order: any, items: any[]) {
+// টেলিগ্রাম নোটিফিকেশন
+async function sendTelegramAlert(order: any, items: any[]) {
   if (!telegramBotToken || !telegramChatId) return;
 
   let itemList = '';
@@ -126,13 +108,13 @@ async function triggerTelegram(order: any, items: any[]) {
     `👤 <b>গ্রাহক:</b> ${order.customer_name}\n` +
     `📞 <b>ফোন:</b> <code>${order.customer_phone}</code>\n` +
     `📍 <b>ঠিকানা:</b> ${order.shipping_address}, ${order.shipping_district}\n\n` +
-    `📦 <b>পণ্যসমূহ:</b>\n${itemList}\n` +
+    `📦 <b>অর্ডারকৃত পণ্যসমূহ:</b>\n${itemList}\n` +
     `💵 <b>সাবটোটাল:</b> ${order.subtotal} ৳\n` +
     `🚚 <b>ডেলিভারি চার্জ:</b> ${order.delivery_charge} ৳\n` +
-    `💰 <b>মোট প্রদেয়:</b> <b>${order.grand_total} ৳</b>\n` +
+    `💰 <b>সর্বমোট বিল:</b> <b>${order.grand_total} ৳</b>\n` +
     `💳 <b>পেমেন্ট:</b> ক্যাশ অন ডেলিভারি (COD)`;
 
-  const photos = Array.from(new Set(items.map((it: any) => it.image_url || MASTER_PRODUCTS[0].image)));
+  const photos = Array.from(new Set(items.map((it: any) => it.image_url || PRODUCTS_LIST[0].image)));
 
   if (photos.length > 1) {
     try {
@@ -170,19 +152,18 @@ async function triggerTelegram(order: any, items: any[]) {
 
 // ================= API ENDPOINTS =================
 
-// ১. হেলথ চেক
-app.get('/api/health', (req, res) => res.json({ status: 'ok', time: new Date() }));
+app.get('/api/health', (req, res) => res.json({ status: 'ok', server_time: new Date() }));
 
-// ২. স্টোর ডেটা ফেচ
+// ১. স্টোর ডেটা ফেচ
 app.get('/api/store-data', (req: Request, res: Response) => {
   res.json({
     success: true,
-    content: MASTER_CMS,
-    products: MASTER_PRODUCTS
+    content: CMS_CONTENT,
+    products: PRODUCTS_LIST
   });
 });
 
-// ৩. চেকআউট (জিরো-ফেলিয়র অর্ডার সিস্টেম)
+// ২. অর্ডার গ্রহণ
 app.post('/api/checkout', (req: Request, res: Response) => {
   try {
     const { customer_name, customer_phone, shipping_district, shipping_address, items } = req.body;
@@ -202,7 +183,7 @@ app.post('/api/checkout', (req: Request, res: Response) => {
 
     let discount = 0;
     const isDhaka = String(shipping_district).toLowerCase().includes('dhaka') || String(shipping_district).includes('ঢাকা');
-    let delivery = isDhaka ? Number(MASTER_CMS.del_inside_charge || 60) : Number(MASTER_CMS.del_outside_charge || 120);
+    let delivery = isDhaka ? Number(CMS_CONTENT.del_inside_charge || 60) : Number(CMS_CONTENT.del_outside_charge || 120);
 
     if (totalQty === 2) discount = 100;
     else if (totalQty >= 3) {
@@ -229,8 +210,10 @@ app.post('/api/checkout', (req: Request, res: Response) => {
       order_items: orderItems
     };
 
-    MASTER_ORDERS.unshift(newOrder);
-    triggerTelegram(newOrder, orderItems);
+    ORDERS_LIST.unshift(newOrder);
+
+    // টেলিগ্রামে অ্যালার্ট
+    sendTelegramAlert(newOrder, orderItems);
 
     res.json({
       success: true,
@@ -242,10 +225,10 @@ app.post('/api/checkout', (req: Request, res: Response) => {
   }
 });
 
-// ৪. অ্যাডমিন অর্ডার তালিকা
+// ৩. অ্যাডমিন অর্ডার তালিকা
 app.get('/api/admin/orders', (req: Request, res: Response) => {
   const { status, search } = req.query;
-  let list = [...MASTER_ORDERS];
+  let list = [...ORDERS_LIST];
 
   if (status && status !== 'all') {
     list = list.filter(o => o.order_status === status);
@@ -263,9 +246,9 @@ app.get('/api/admin/orders', (req: Request, res: Response) => {
   res.json({ success: true, orders: list });
 });
 
-// ৫. অ্যাডমিন মেট্রিকস
+// ৪. অ্যাডমিন মেট্রিকস
 app.get('/api/admin/metrics', (req: Request, res: Response) => {
-  const list = MASTER_ORDERS;
+  const list = ORDERS_LIST;
   res.json({
     total: list.length,
     pending: list.filter(o => o.order_status === 'pending').length,
@@ -276,11 +259,11 @@ app.get('/api/admin/metrics', (req: Request, res: Response) => {
   });
 });
 
-// ৬. কাস্টমার ও অর্ডার তথ্য পূর্ণাঙ্গ এডিট
+// ৫. কাস্টমার ও অর্ডার তথ্য এডিট
 app.post('/api/admin/orders/update-full', (req: Request, res: Response) => {
   try {
     const { order_id, customer_name, customer_phone, shipping_district, shipping_address, grand_total, order_status } = req.body;
-    const order = MASTER_ORDERS.find(o => o.id === order_id || o.order_number === order_id);
+    const order = ORDERS_LIST.find(o => o.id === order_id || o.order_number === order_id);
 
     if (order) {
       if (customer_name) order.customer_name = customer_name;
@@ -297,34 +280,34 @@ app.post('/api/admin/orders/update-full', (req: Request, res: Response) => {
   }
 });
 
-// ৭. অর্ডার স্ট্যাটাস আপডেট
+// ৬. অর্ডার স্ট্যাটাস আপডেট (ড্যাশবোর্ড চেঞ্জ)
 app.post('/api/admin/orders/update-status', (req: Request, res: Response) => {
   const { order_id, status } = req.body;
-  const o = MASTER_ORDERS.find(x => x.id === order_id || x.order_number === order_id);
+  const o = ORDERS_LIST.find(x => x.id === order_id || x.order_number === order_id);
   if (o) o.order_status = status;
   res.json({ success: true });
 });
 
-// ৮. অর্ডার ডিলিট
+// ৭. অর্ডার ডিলিট
 app.post('/api/admin/orders/delete', (req: Request, res: Response) => {
   const { order_id } = req.body;
-  MASTER_ORDERS = MASTER_ORDERS.filter(x => x.id !== order_id && x.order_number !== order_id);
+  ORDERS_LIST = ORDERS_LIST.filter(x => x.id !== order_id && x.order_number !== order_id);
   res.json({ success: true });
 });
 
-// ৯. CMS টেক্সট এডিটর সেভ
+// ৮. CMS টেক্সট এডিটর সেভ
 app.post('/api/admin/cms/update-single', (req: Request, res: Response) => {
   const { field, value } = req.body;
   if (field) {
-    MASTER_CMS[field] = value;
+    CMS_CONTENT[field] = value;
   }
   res.json({ success: true, message: 'Saved successfully' });
 });
 
-// ১০. প্রোডাক্ট আপডেট
+// ৯. প্রোডাক্ট আপডেট
 app.post('/api/admin/products/update', (req: Request, res: Response) => {
   const { id, name, regular_price, price, image } = req.body;
-  const p = MASTER_PRODUCTS.find(x => x.id === id);
+  const p = PRODUCTS_LIST.find(x => x.id === id);
   if (p) {
     if (name) p.name = name;
     if (regular_price) p.regular_price = Number(regular_price);
@@ -335,7 +318,7 @@ app.post('/api/admin/products/update', (req: Request, res: Response) => {
   res.status(404).json({ success: false });
 });
 
-// ১১. নতুন প্রোডাক্ট যোগ
+// ১০. নতুন প্রোডাক্ট যোগ
 app.post('/api/admin/products/add', (req: Request, res: Response) => {
   const { name, regular_price, price, image } = req.body;
   const newProd = {
@@ -345,14 +328,14 @@ app.post('/api/admin/products/add', (req: Request, res: Response) => {
     price: Number(price) || 750,
     image: image || 'https://images.unsplash.com/photo-1596755094514-f87e34085b2c?auto=format&fit=crop&w=800&q=80'
   };
-  MASTER_PRODUCTS.push(newProd);
+  PRODUCTS_LIST.push(newProd);
   res.json({ success: true, product: newProd });
 });
 
-// ১২. প্রোডাক্ট ডিলিট
+// ১১. প্রোডাক্ট ডিলিট
 app.post('/api/admin/products/delete', (req: Request, res: Response) => {
   const { id } = req.body;
-  MASTER_PRODUCTS = MASTER_PRODUCTS.filter(p => p.id !== id);
+  PRODUCTS_LIST = PRODUCTS_LIST.filter(p => p.id !== id);
   res.json({ success: true });
 });
 
