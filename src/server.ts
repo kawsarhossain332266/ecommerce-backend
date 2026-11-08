@@ -18,19 +18,41 @@ const telegramChatId = process.env.TELEGRAM_CHAT_ID || '';
 
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-// নিরাপদ টেলিগ্রাম অ্যালার্ট ফাংশন (HTML মোড - কখনো ক্র্যাশ করবে না)
-async function sendTelegramAlert(orderData: any, items: any[]): Promise<any> {
+// পণ্য অনুযায়ী আসল ছবির ম্যাপিং
+const COLOR_IMAGE_MAP: Record<string, string> = {
+  olive: 'https://images.unsplash.com/photo-1596755094514-f87e34085b2c?auto=format&fit=crop&w=800&q=80',
+  blue: 'https://images.unsplash.com/photo-1507679799987-c73779587ccf?auto=format&fit=crop&w=800&q=80',
+  pink: 'https://images.unsplash.com/photo-1617137984095-74e4e5e3613f?auto=format&fit=crop&w=800&q=80',
+  maroon: 'https://images.unsplash.com/photo-1598033129183-c4f50c736f10?auto=format&fit=crop&w=800&q=80'
+};
+
+// ছবিসহ টেলিগ্রাম নোটিফিকেশন পাঠানোর উন্নত ফাংশন (sendPhoto)
+async function sendTelegramAlertWithPhoto(orderData: any, items: any[]): Promise<any> {
   if (!telegramBotToken || !telegramChatId) {
-    console.error('Telegram Token or Chat ID missing in Environment Variables!');
+    console.error('Telegram Token or Chat ID missing!');
     return { error: 'Token/ChatID missing' };
   }
 
+  // কাস্টমার কোন কালার অর্ডার করেছে তা শনাক্ত করে সঠিক ছবি বেছে নেওয়া
+  let selectedPhoto = COLOR_IMAGE_MAP.olive;
+  const firstItemName = (items[0]?.product_name || '').toLowerCase();
+
+  if (firstItemName.includes('রয়েল') || firstItemName.includes('রয়্যাল') || firstItemName.includes('blue')) {
+    selectedPhoto = COLOR_IMAGE_MAP.blue;
+  } else if (firstItemName.includes('পিংক') || firstItemName.includes('pink')) {
+    selectedPhoto = COLOR_IMAGE_MAP.pink;
+  } else if (firstItemName.includes('মেরুন') || firstItemName.includes('maroon') || firstItemName.includes('রেড')) {
+    selectedPhoto = COLOR_IMAGE_MAP.maroon;
+  }
+
+  // পণ্যের বিবরণ তৈরি
   let itemList = '';
   items.forEach((item, index) => {
     itemList += `<b>${index + 1}.</b> ${item.product_name} x <b>${item.quantity}</b> = ${item.total_price} ৳\n`;
   });
 
-  const message = `🛍️ <b>নতুন অর্ডার এসেছে!</b> (<code>${orderData.order_number}</code>)\n\n` +
+  // ছবির নিচের বিস্তারিত ক্যাপশন
+  const caption = `🛍️ <b>নতুন অর্ডার এসেছে!</b> (<code>${orderData.order_number}</code>)\n\n` +
     `👤 <b>গ্রাহক:</b> ${orderData.customer_name}\n` +
     `📞 <b>ফোন:</b> <code>${orderData.customer_phone}</code>\n` +
     `📍 <b>ঠিকানা:</b> ${orderData.shipping_address}, ${orderData.shipping_district}\n\n` +
@@ -40,24 +62,47 @@ async function sendTelegramAlert(orderData: any, items: any[]): Promise<any> {
     `💰 <b>সর্বমোট বিল:</b> <b>${orderData.grand_total} ৳</b>\n` +
     `💳 <b>পেমেন্ট:</b> ক্যাশ অন ডেলিভারি (COD)`;
 
-  const url = `https://api.telegram.org/bot${telegramBotToken}/sendMessage`;
+  // ১. সরাসরি ছবিসহ টেলিগ্রামে পাঠানো (sendPhoto API)
+  const photoUrl = `https://api.telegram.org/bot${telegramBotToken}/sendPhoto`;
   
   try {
-    const res = await fetch(url, {
+    const photoRes = await fetch(photoUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         chat_id: telegramChatId,
-        text: message,
+        photo: selectedPhoto,
+        caption: caption,
         parse_mode: 'HTML'
       })
     });
-    const result = await res.json();
-    console.log('Telegram API result:', result);
-    return result;
+    
+    const result = await photoRes.json();
+    if (result.ok) {
+      console.log('Telegram photo alert sent successfully!');
+      return result;
+    }
+    console.warn('sendPhoto failed, trying fallback to text:', result);
   } catch (err) {
-    console.error('Telegram network error:', err);
-    return { error: err };
+    console.error('sendPhoto network error:', err);
+  }
+
+  // ২. কোনো কারণে ছবি পাঠাতে সমস্যা হলে টেক্সট মেসেজ পাঠানো (যাতে অর্ডার মিস না হয়)
+  const textUrl = `https://api.telegram.org/bot${telegramBotToken}/sendMessage`;
+  try {
+    const textRes = await fetch(textUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: telegramChatId,
+        text: caption,
+        parse_mode: 'HTML'
+      })
+    });
+    return await textRes.json();
+  } catch (e) {
+    console.error('sendMessage fallback error:', e);
+    return { error: e };
   }
 }
 
@@ -65,43 +110,32 @@ app.get('/api/health', (req: Request, res: Response) => {
   res.json({ status: 'ok', timestamp: new Date() });
 });
 
-// ১. টেলিগ্রাম টেস্ট করার সরাসরি লিংক (এটি দিয়ে চেক করবেন বট ঠিক আছে কি না)
+// সরাসরি ছবিসহ টেলিগ্রাম টেস্ট লিংক
 app.get('/api/test-telegram', async (req: Request, res: Response) => {
   if (!telegramBotToken || !telegramChatId) {
-    return res.json({
-      success: false,
-      error: 'Render Environment-এ TELEGRAM_BOT_TOKEN বা TELEGRAM_CHAT_ID পাওয়া যায়নি।'
-    });
+    return res.json({ success: false, error: 'Telegram credentials missing.' });
   }
 
-  const testUrl = `https://api.telegram.org/bot${telegramBotToken}/sendMessage`;
+  const testUrl = `https://api.telegram.org/bot${telegramBotToken}/sendPhoto`;
   try {
     const tgRes = await fetch(testUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         chat_id: telegramChatId,
-        text: '🔔 <b>টেস্ট মেসেজ:</b> অভিনন্দন! আপনার টেলিগ্রাম বট ব্যাকএন্ডের সাথে সফলভাবে কানেক্ট হয়েছে।',
+        photo: COLOR_IMAGE_MAP.olive,
+        caption: '🔔 <b>টেস্ট ফটো অ্যালার্ট:</b> অভিনন্দন! ছবিসহ আপনার টেলিগ্রাম নোটিফিকেশন সিস্টেম সম্পূর্ণ সক্রিয়।',
         parse_mode: 'HTML'
       })
     });
     const result = await tgRes.json();
-    if (result.ok) {
-      res.json({ success: true, message: 'টেলিগ্রামে টেস্ট মেসেজ চলে গেছে! আপনার বট সম্পূর্ণ ঠিক আছে।' });
-    } else {
-      res.json({ success: false, telegram_response: result });
-    }
+    res.json({ success: result.ok, telegram_response: result });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// ২. স্টোর ডেটা ফেচ
-app.get('/api/store-data', async (req: Request, res: Response) => {
-  res.json({ status: 'ready', message: 'Custom landing page active' });
-});
-
-// ৩. নতুন ব্লগার থিমের সাথে ১০০% মানানসই অর্ডার চেকআউট এন্ডপয়েন্ট
+// চেকআউট এন্ডপয়েন্ট (ছবিসহ টেলিগ্রামে পাঠানোর লজিক)
 app.post('/api/checkout', async (req: Request, res: Response) => {
   try {
     const { customer_name, customer_phone, shipping_district, shipping_address, items } = req.body;
@@ -110,9 +144,8 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'সকল প্রয়োজনীয় তথ্য প্রদান করুন।' });
     }
 
-    const orderItems = items && items.length > 0 ? items : [{ product_name: 'কাতুয়া - অলিভ গ্রিন', quantity: 1, total_price: 750 }];
+    const orderItems = items && items.length > 0 ? items : [{ product_name: 'কাতুয়া - অলিভ গ্রিন (L)', quantity: 1, total_price: 750 }];
     
-    // মোট মূল্য হিসাব
     let subtotal = 0;
     orderItems.forEach((it: any) => {
       subtotal += Number(it.total_price || 750);
@@ -134,10 +167,10 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
       grand_total: grandTotal
     };
 
-    // সবার আগে টেলিগ্রামে মেসেজ পাঠানো নিশ্চিত করা
-    const telegramResult = await sendTelegramAlert(orderRecord, orderItems);
+    // সরাসরি ছবিসহ টেলিগ্রামে অ্যালার্ট পাঠানো
+    const telegramResult = await sendTelegramAlertWithPhoto(orderRecord, orderItems);
 
-    // ডাটাবেসে ব্যাকগ্রাউন্ডে সেভ (ঐচ্ছিক)
+    // ডাটাবেসে ব্যাকআপ লগ
     try {
       await supabase.from('orders').insert({
         order_number: orderNumber,
