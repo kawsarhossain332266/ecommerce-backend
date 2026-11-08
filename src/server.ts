@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 5000;
 app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '10mb' }));
 
-// ১. স্মার্ট URL স্যানিটাইজার (Invalid path এরর চিরতরে বন্ধ করার জন্য)
+// ১. স্মার্ট URL স্যানিটাইজার
 function getSanitizedSupabaseUrl(): string {
   let url = (process.env.SUPABASE_URL || '').trim();
   url = url.replace(/\/+$/, '').replace(/\/rest\/v1\/?$/, '');
@@ -36,11 +36,10 @@ if (supabaseUrl && supabaseServiceKey) {
   }
 }
 
-// ২. ইন-মেমোরি জিরো-ফেলিয়র রিয়েল-টাইম স্টোর (ডাটাবেস ড্রপ করলেও অর্ডার মিস হবে না)
+// ২. ইন-মেমোরি মাস্টার ডেটাবেস
 let IN_MEMORY_ORDERS: any[] = [];
 
 let IN_MEMORY_CMS: Record<string, any> = {
-  // হেডার ও হিরো
   hero_headline: 'প্রিমিয়াম কোয়ালিটির স্টাইলিশ কাতুয়া',
   hero_discount_badge: '🔥 ৩০% ডিসকাউন্ট সীমিত সময়ের জন্য 🔥',
   hero_subtitle: 'আমাদের এই স্টাইলিশ ফিট ও আকর্ষণীয় কাতুয়াটিতে পাবেন স্টাইল, কমফোর্ট এবং কোয়ালিটি — সব একসাথে!',
@@ -49,7 +48,6 @@ let IN_MEMORY_CMS: Record<string, any> = {
   timer_minutes: 12,
   timer_seconds: 30,
 
-  // স্পেসিফিকেশন
   spec_section_title: 'প্রোডাক্ট স্পেসিফিকেশন',
   spec_item_1: '১০০% পিওর কটন ফেব্রিক দিয়ে তৈরি।',
   spec_item_2: 'অত্যন্ত নরম, আরামদায়ক ও ব্রিদেবল।',
@@ -57,7 +55,6 @@ let IN_MEMORY_CMS: Record<string, any> = {
   spec_item_4: 'প্রিমিয়াম সুতার নিখুঁত এমব্রয়ডারি ও আফসান প্রিন্ট।',
   spec_item_5: 'দৈনন্দিন ব্যবহার এবং যেকোনো অনুষ্ঠানের জন্য সেরা চয়েস।',
 
-  // সাইজ চার্ট
   size_section_title: 'সাইজ মেজারমেন্ট (Size Chart)',
   size_section_subtitle: 'আপনার সঠিক বডি মেজারমেন্ট দেখে সাইজ বেছে নিন',
   size_m_len: '28"', size_m_chest: '40"',
@@ -65,7 +62,6 @@ let IN_MEMORY_CMS: Record<string, any> = {
   size_xl_len: '30"', size_xl_chest: '44"',
   size_xxl_len: '31"', size_xxl_chest: '46"',
 
-  // কম্বো অফার কার্ডস (আপনার চাহিদা অনুযায়ী প্রতিটি টেক্সট আলাদা)
   combo_section_title: 'বেশি নিলে বেশি সাশ্রয়!',
   combo_section_badge: 'স্পেশাল কম্বো অফার',
   combo_section_sub: 'একের অধিক অর্ডারে পান সরাসরি ক্যাশ ডিসকাউন্ট ও ফ্রি হোম ডেলিভারি',
@@ -83,7 +79,6 @@ let IN_MEMORY_CMS: Record<string, any> = {
   combo3_discount_tag: '✓ ২৫০ টাকা ক্যাশ ডিসকাউন্ট',
   combo3_delivery_tag: '🚚 ডেলিভারি সম্পূর্ণ ফ্রি!',
 
-  // ডেলিভারি চার্জ (আপনার নির্দেশ অনুযায়ী ৬০ ও ১২০ টাকা)
   del_inside_title: 'ঢাকার মধ্যে ডেলিভারি',
   del_inside_sub: '২৪ থেকে ৪৮ ঘণ্টার মধ্যে নিশ্চিত ডেলিভারি।',
   del_inside_charge: 60,
@@ -91,36 +86,33 @@ let IN_MEMORY_CMS: Record<string, any> = {
   del_outside_sub: '২ থেকে ৩ দিনের মধ্যে সারা দেশে হোম ডেলিভারি।',
   del_outside_charge: 120,
 
-  // কাস্টমার ফর্ম ও নোটিশ
   form_section_title: 'আপনার পছন্দের কালার ও সাইজ নির্বাচন করুন',
   form_section_subtitle: 'একের অধিক কালার নিতে সংশ্লিষ্ট বক্সে টিক দিন এবং সাইজ বেছে নিন',
   form_header_notice: '📋 কাস্টমার ডেলিভারি তথ্য (অর্ডার ফর্মটি পূরণ করুন)',
   form_btn_text: '✓ অর্ডার কনফার্ম করুন',
 
-  // যোগাযোগ ও অফিস
   contact_section_title: 'যেকোনো তথ্যের জন্য সরাসরি যোগাযোগ করুন',
   contact_phone: '01700000000',
   contact_whatsapp: '01700000000',
   office_address: 'শপ-২৩০, এমডি প্লাজা, মোহাম্মদপুর, ঢাকা-১২০৭, বাংলাদেশ।',
 
-  // পলিসি
   policy_about: 'স্বপ্ন লাইফস্টাইল বাংলাদেশের অন্যতম বিশ্বস্ত অনলাইন ফ্যাশন ব্র্যান্ড। আমরা আধুনিক ও রুচিশীল পুরুষদের জন্য সেরা মানের সুতি কাপড়ে তৈরি প্রিমিয়াম পাঞ্জাবি ও কাতুয়া সরবরাহ করি।',
   policy_terms: '১. সারা বাংলাদেশে সম্পূর্ণ ক্যাশ অন ডেলিভারিতে কোনো অগ্রিম টাকা ছাড়াই অর্ডার করতে পারবেন।\n২. অর্ডার কনফার্ম করার পর আমাদের কাস্টমার সাপোর্ট টিম থেকে ফোন দিয়ে ঠিকানা ভেরিফাই করা হতে পারে।',
   policy_return: '১. রাইডারের সামনে চেক: ডেলিভারি ম্যান থাকাকালীন প্রোডাক্টের সাইজ ও কোয়ালিটি ভালোভাবে চেক করে রিসিভ করবেন।\n২. ইনস্ট্যান্ট রিটার্ন: পণ্য পছন্দ না হলে বা সাইজে সমস্যা থাকলে ডেলিভারি চার্জ প্রদান করে সাথে সাথে রাইডারের কাছে রিটার্ন করতে পারবেন।',
 
-  // পিক্সেল
   fb_pixel_id: '',
   tiktok_pixel_id: ''
 };
 
+// প্রোডাক্ট তালিকা (রেগুলার প্রাইস ও অফার প্রাইস সহ)
 let IN_MEMORY_PRODUCTS: any[] = [
-  { id: 'prod_1', name: 'কাতুয়া - অলিভ গ্রিন', price: 750, image: 'https://images.unsplash.com/photo-1596755094514-f87e34085b2c?auto=format&fit=crop&w=800&q=80' },
-  { id: 'prod_2', name: 'কাতুয়া - রয়েল ব্লু', price: 750, image: 'https://images.unsplash.com/photo-1507679799987-c73779587ccf?auto=format&fit=crop&w=800&q=80' },
-  { id: 'prod_3', name: 'কাতুয়া - লাইট পিংক', price: 750, image: 'https://images.unsplash.com/photo-1617137984095-74e4e5e3613f?auto=format&fit=crop&w=800&q=80' },
-  { id: 'prod_4', name: 'কাতুয়া - মেরুন রেড', price: 750, image: 'https://images.unsplash.com/photo-1598033129183-c4f50c736f10?auto=format&fit=crop&w=800&q=80' }
+  { id: 'prod_1', name: 'কাতুয়া - অলিভ গ্রিন', regular_price: 1050, price: 750, image: 'https://images.unsplash.com/photo-1596755094514-f87e34085b2c?auto=format&fit=crop&w=800&q=80' },
+  { id: 'prod_2', name: 'কাতুয়া - রয়েল ব্লু', regular_price: 1050, price: 750, image: 'https://images.unsplash.com/photo-1507679799987-c73779587ccf?auto=format&fit=crop&w=800&q=80' },
+  { id: 'prod_3', name: 'কাতুয়া - লাইট পিংক', regular_price: 1050, price: 750, image: 'https://images.unsplash.com/photo-1617137984095-74e4e5e3613f?auto=format&fit=crop&w=800&q=80' },
+  { id: 'prod_4', name: 'কাতুয়া - মেরুন রেড', regular_price: 1050, price: 750, image: 'https://images.unsplash.com/photo-1598033129183-c4f50c736f10?auto=format&fit=crop&w=800&q=80' }
 ];
 
-// টেলিগ্রাম ফটো অ্যালার্ট
+// টেলিগ্রাম নোটিফিকেশন
 async function sendTelegramAlert(orderData: any, items: any[]) {
   if (!telegramBotToken || !telegramChatId) return;
 
@@ -177,25 +169,17 @@ async function sendTelegramAlert(orderData: any, items: any[]) {
 
 // ================= API ENDPOINTS =================
 
-app.get('/api/health', (req, res) => res.json({ status: 'ok', server_time: new Date() }));
+app.get('/api/health', (req, res) => res.json({ status: 'ok', time: new Date() }));
 
-// ১. ওয়েবসাইট ও অ্যাডমিনের সমস্ত লাইভ কনটেন্ট ফেচ
+// ১. পাবলিক সাইটের সমস্ত ডেটা ফেচ
 app.get('/api/store-data', async (req: Request, res: Response) => {
-  if (supabase) {
-    try {
-      const { data: dbCms } = await supabase.from('site_content').select('*').eq('id', 'master_content').maybeSingle();
-      if (dbCms) {
-        IN_MEMORY_CMS = { ...IN_MEMORY_CMS, ...dbCms };
-      }
-    } catch (e) {}
-  }
   res.json({
     content: IN_MEMORY_CMS,
     products: IN_MEMORY_PRODUCTS
   });
 });
 
-// ২. চেকআউট ও অর্ডার প্লেসমেন্ট (১০০% গ্যারান্টিড)
+// ২. অর্ডার গ্রহণ
 app.post('/api/checkout', async (req: Request, res: Response) => {
   try {
     const { customer_name, customer_phone, shipping_district, shipping_address, items } = req.body;
@@ -242,38 +226,9 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
       order_items: orderItems
     };
 
-    // মেমোরি স্টোরে সেভ (ইনস্ট্যান্ট অ্যাডমিনে দৃশ্যমান হবে)
     IN_MEMORY_ORDERS.unshift(newOrder);
 
-    // Supabase ডাটাবেসে সেভ (যদি কানেক্টেড থাকে)
-    if (supabase) {
-      supabase.from('orders').insert({
-        order_number: orderNumber,
-        customer_name,
-        customer_phone,
-        shipping_district: newOrder.shipping_district,
-        shipping_address,
-        subtotal,
-        discount_amount: discount,
-        delivery_charge: delivery,
-        grand_total: grandTotal,
-        order_status: 'pending'
-      }).select().single().then(({ data: insOrder }: any) => {
-        if (insOrder) {
-          const itemsArr = orderItems.map((it: any) => ({
-            order_id: insOrder.id,
-            product_name: it.product_name,
-            quantity: it.quantity || 1,
-            unit_price: it.unit_price || 750,
-            total_price: it.total_price || 750,
-            image_url: it.image_url || ''
-          }));
-          supabase.from('order_items').insert(itemsArr).catch(() => {});
-        }
-      }).catch(() => {});
-    }
-
-    // টেলিগ্রামে ছবিসহ এলার্ট পাঠানো
+    // টেলিগ্রামে ছবিসহ পাঠানো
     sendTelegramAlert(newOrder, orderItems);
 
     res.json({
@@ -286,7 +241,7 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
   }
 });
 
-// ৩. অ্যাডমিন অর্ডার তালিকা (ফিল্টার ও সার্চ সহ)
+// ৩. অ্যাডমিন অর্ডার তালিকা
 app.get('/api/admin/orders', (req: Request, res: Response) => {
   const { status, search } = req.query;
   let list = [...IN_MEMORY_ORDERS];
@@ -320,49 +275,77 @@ app.get('/api/admin/metrics', (req: Request, res: Response) => {
   });
 });
 
-// ৫. অর্ডার স্ট্যাটাস আপডেট
+// ৫. কাস্টমার ও অর্ডার তথ্য পূর্ণাঙ্গ এডিট (New Feature)
+app.post('/api/admin/orders/update-full', (req: Request, res: Response) => {
+  try {
+    const { order_id, customer_name, customer_phone, shipping_district, shipping_address, product_name, quantity, grand_total, order_status } = req.body;
+    const order = IN_MEMORY_ORDERS.find(o => o.id === order_id || o.order_number === order_id);
+
+    if (order) {
+      if (customer_name) order.customer_name = customer_name;
+      if (customer_phone) order.customer_phone = customer_phone;
+      if (shipping_district) order.shipping_district = shipping_district;
+      if (shipping_address) order.shipping_address = shipping_address;
+      if (order_status) order.order_status = order_status;
+      if (grand_total) order.grand_total = Number(grand_total);
+
+      if (order.order_items && order.order_items.length > 0) {
+        if (product_name) order.order_items[0].product_name = product_name;
+        if (quantity) order.order_items[0].quantity = Number(quantity);
+      }
+      return res.json({ success: true, message: 'অর্ডার তথ্য সফলভাবে আপডেট হয়েছে!' });
+    }
+    res.status(404).json({ success: false, message: 'অর্ডার পাওয়া যায়নি।' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ৬. অর্ডার স্ট্যাটাস আপডেট
 app.post('/api/admin/orders/update-status', (req: Request, res: Response) => {
   const { order_id, status } = req.body;
   const o = IN_MEMORY_ORDERS.find(x => x.id === order_id || x.order_number === order_id);
-  if (o) {
-    o.order_status = status;
-  }
-  if (supabase) {
-    supabase.from('orders').update({ order_status: status }).or(`id.eq.${order_id},order_number.eq.${order_id}`).catch(() => {});
-  }
+  if (o) o.order_status = status;
   res.json({ success: true });
 });
 
-// ৬. অর্ডার ডিলিট
+// ৭. অর্ডার ডিলিট
 app.post('/api/admin/orders/delete', (req: Request, res: Response) => {
   const { order_id } = req.body;
   IN_MEMORY_ORDERS = IN_MEMORY_ORDERS.filter(x => x.id !== order_id && x.order_number !== order_id);
-  if (supabase) {
-    supabase.from('orders').delete().or(`id.eq.${order_id},order_number.eq.${order_id}`).catch(() => {});
-  }
   res.json({ success: true });
 });
 
-// ৭. টেক্সট এডিটর সেভ (Pencil Edit Sync - শতভাগ কার্যকর)
+// ৮. সিঙ্গল CMS টেক্সট এডিটর (১০০% নির্ভরযোগ্য)
 app.post('/api/admin/cms/update-single', (req: Request, res: Response) => {
   const { field, value } = req.body;
-  IN_MEMORY_CMS[field] = value;
-
-  if (supabase) {
-    const upd: any = {};
-    upd[field] = value;
-    supabase.from('site_content').update(upd).eq('id', 'master_content').catch(() => {});
+  if (field) {
+    IN_MEMORY_CMS[field] = value;
   }
-
   res.json({ success: true, message: 'সফলভাবে সংরক্ষিত হয়েছে!' });
 });
 
-// ৮. নতুন প্রোডাক্ট যোগ (Add New Product)
+// ৯. প্রোডাক্ট আপডেট ও এডিট (New Feature)
+app.post('/api/admin/products/update', (req: Request, res: Response) => {
+  const { id, name, regular_price, price, image } = req.body;
+  const p = IN_MEMORY_PRODUCTS.find(x => x.id === id);
+  if (p) {
+    if (name) p.name = name;
+    if (regular_price) p.regular_price = Number(regular_price);
+    if (price) p.price = Number(price);
+    if (image) p.image = image;
+    return res.json({ success: true, product: p });
+  }
+  res.status(404).json({ success: false, message: 'প্রোডাক্ট পাওয়া যায়নি' });
+});
+
+// ১০. নতুন প্রোডাক্ট যোগ
 app.post('/api/admin/products/add', (req: Request, res: Response) => {
-  const { name, price, image } = req.body;
+  const { name, regular_price, price, image } = req.body;
   const newProd = {
     id: 'prod_' + Date.now(),
     name: name || 'নতুন প্রিমিয়াম কাতুয়া',
+    regular_price: Number(regular_price) || 1050,
     price: Number(price) || 750,
     image: image || 'https://images.unsplash.com/photo-1596755094514-f87e34085b2c?auto=format&fit=crop&w=800&q=80'
   };
@@ -370,11 +353,11 @@ app.post('/api/admin/products/add', (req: Request, res: Response) => {
   res.json({ success: true, product: newProd });
 });
 
-// ৯. প্রোডাক্ট ডিলিট
+// ১১. প্রোডাক্ট ডিলিট
 app.post('/api/admin/products/delete', (req: Request, res: Response) => {
   const { id } = req.body;
   IN_MEMORY_PRODUCTS = IN_MEMORY_PRODUCTS.filter(p => p.id !== id);
   res.json({ success: true });
 });
 
-app.listen(PORT, () => console.log(`Master Zero-Failure Server live on port ${PORT}`));
+app.listen(PORT, () => console.log(`Master API live on port ${PORT}`));
