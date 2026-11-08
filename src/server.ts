@@ -57,18 +57,34 @@ app.get('/api/health', (req: Request, res: Response) => {
   res.json({ status: 'ok', timestamp: new Date() });
 });
 
+// সরাসরি ও সহজ পদ্ধতিতে ডেটা পাঠানো (কোনো জটিল কুয়েরি ছাড়াই)
 app.get('/api/store-data', async (req: Request, res: Response) => {
   try {
-    const [settingsRes, bannersRes, productsRes] = await Promise.all([
-      supabase.from('store_settings').select('*').limit(1).single(),
-      supabase.from('banners').select('*').eq('is_active', true),
-      supabase.from('products').select('*, product_variants(*), product_images(*)').eq('is_active', true)
+    const [settingsRes, bannersRes, productsRes, imagesRes] = await Promise.all([
+      supabase.from('store_settings').select('*'),
+      supabase.from('banners').select('*'),
+      supabase.from('products').select('*'),
+      supabase.from('product_images').select('*')
     ]);
 
+    // প্রোডাক্টের সাথে ছবি যুক্ত করা
+    const formattedProducts = (productsRes.data || []).map((prod: any) => {
+      const prodImages = (imagesRes.data || []).filter((img: any) => img.product_id === prod.id);
+      return {
+        ...prod,
+        product_images: prodImages.length > 0 ? prodImages : [{ image_url: 'https://images.unsplash.com/photo-1596755094514-f87e34085b2c?auto=format&fit=crop&w=800&q=80' }]
+      };
+    });
+
     res.json({
-      settings: settingsRes.data || {},
+      settings: settingsRes.data?.[0] || { store_name: 'BD Exclusive Store', phone: '01700000000' },
       banners: bannersRes.data || [],
-      products: productsRes.data || []
+      products: formattedProducts,
+      status: {
+        settings_err: settingsRes.error?.message || null,
+        banners_err: bannersRes.error?.message || null,
+        products_err: productsRes.error?.message || null
+      }
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -83,7 +99,7 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'সকল প্রয়োজনীয় তথ্য দিন।' });
     }
 
-    const { data: settings } = await supabase.from('store_settings').select('*').limit(1).single();
+    const { data: settings } = await supabase.from('store_settings').select('*').limit(1).maybeSingle();
     
     const deliveryCharge = shipping_district.toLowerCase().includes('dhaka') || shipping_district.includes('ঢাকা')
       ? Number(settings?.delivery_inside_dhaka || 80)
@@ -93,7 +109,7 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
     const verifiedItems = [];
 
     for (const item of items) {
-      const { data: prod } = await supabase.from('products').select('*').eq('id', item.product_id).single();
+      const { data: prod } = await supabase.from('products').select('*').eq('id', item.product_id).maybeSingle();
       if (!prod) continue;
 
       const itemTotal = Number(prod.sale_price) * Number(item.quantity);
@@ -122,29 +138,4 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
       subtotal,
       delivery_charge: deliveryCharge,
       grand_total: grandTotal,
-      payment_method: payment_method || 'cod',
-      order_status: 'pending'
-    }).select().single();
-
-    if (orderError) throw orderError;
-
-    const orderItemsWithId = verifiedItems.map(it => ({ ...it, order_id: order.id }));
-    await supabase.from('order_items').insert(orderItemsWithId);
-
-    sendTelegramAlert(order, verifiedItems);
-
-    res.json({
-      success: true,
-      message: 'অর্ডার সফল হয়েছে!',
-      order_number: order.order_number,
-      grand_total: order.grand_total
-    });
-
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.listen(PORT, () => {
-  console.log(`Server live on port ${PORT}`);
-});
+      payment_method: p
