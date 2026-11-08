@@ -11,7 +11,6 @@ const PORT = process.env.PORT || 5000;
 app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '10mb' }));
 
-// ১. স্মার্ট URL স্যানিটাইজার
 function getSanitizedSupabaseUrl(): string {
   let url = (process.env.SUPABASE_URL || '').trim();
   url = url.replace(/\/+$/, '').replace(/\/rest\/v1\/?$/, '');
@@ -31,15 +30,16 @@ let supabase: any = null;
 if (supabaseUrl && supabaseServiceKey) {
   try {
     supabase = createClient(supabaseUrl, supabaseServiceKey);
-  } catch (e) {
-    console.error('Supabase init warning:', e);
-  }
+  } catch (e) {}
 }
 
-// ২. ইন-মেমোরি মাস্টার ডেটাবেস
 let IN_MEMORY_ORDERS: any[] = [];
 
-let IN_MEMORY_CMS: Record<string, any> = {
+// ডিফল্ট পার্মানেন্ট CMS (কখনো খালি হবে না)
+const DEFAULT_CMS: Record<string, any> = {
+  store_name: 'স্বপ্ন লাইফস্টাইল',
+  store_tagline: 'Premium Menswear Brand',
+  header_btn_text: 'অর্ডার করুন 👉',
   hero_headline: 'প্রিমিয়াম কোয়ালিটির স্টাইলিশ কাতুয়া',
   hero_discount_badge: '🔥 ৩০% ডিসকাউন্ট সীমিত সময়ের জন্য 🔥',
   hero_subtitle: 'আমাদের এই স্টাইলিশ ফিট ও আকর্ষণীয় কাতুয়াটিতে পাবেন স্টাইল, কমফোর্ট এবং কোয়ালিটি — সব একসাথে!',
@@ -47,13 +47,6 @@ let IN_MEMORY_CMS: Record<string, any> = {
   timer_hours: 20,
   timer_minutes: 12,
   timer_seconds: 30,
-
-  spec_section_title: 'প্রোডাক্ট স্পেসিফিকেশন',
-  spec_item_1: '১০০% পিওর কটন ফেব্রিক দিয়ে তৈরি।',
-  spec_item_2: 'অত্যন্ত নরম, আরামদায়ক ও ব্রিদেবল।',
-  spec_item_3: 'আভিজাত্যপূর্ণ ও স্টাইলিশ সেমি-লং ফিটিং।',
-  spec_item_4: 'প্রিমিয়াম সুতার নিখুঁত এমব্রয়ডারি ও আফসান প্রিন্ট।',
-  spec_item_5: 'দৈনন্দিন ব্যবহার এবং যেকোনো অনুষ্ঠানের জন্য সেরা চয়েস।',
 
   size_section_title: 'সাইজ মেজারমেন্ট (Size Chart)',
   size_section_subtitle: 'আপনার সঠিক বডি মেজারমেন্ট দেখে সাইজ বেছে নিন',
@@ -67,50 +60,47 @@ let IN_MEMORY_CMS: Record<string, any> = {
   combo_section_sub: 'একের অধিক অর্ডারে পান সরাসরি ক্যাশ ডিসকাউন্ট ও ফ্রি হোম ডেলিভারি',
   
   combo2_badge: '২ পিস প্যাকেজ',
-  combo2_title: 'ডাবল কম্বো সেভার (২ পিস প্যাকেজ রেট)',
+  combo2_title: 'দুই পিস প্যাকেজ রেট শিরোনাম',
   combo2_reg_price: '৳ ১৫০০',
   combo2_offer_price: '৳ ১৪০০',
   combo2_discount_tag: '✓ আপনি সরাসরি সেভ করছেন ১০০ টাকা!',
 
   combo3_badge: '৩ পিস মেগা সেভার',
-  combo3_title: 'মেগা ফ্যামিলি কম্বো (তিন পিস মেগা প্যাকেজ রেট)',
+  combo3_title: 'তিন পিস মেগা প্যাকেজ রেট শিরোনাম',
   combo3_reg_price: '৳ ২২৫০',
   combo3_offer_price: '৳ ২০০০',
   combo3_discount_tag: '✓ ২৫০ টাকা ক্যাশ ডিসকাউন্ট',
   combo3_delivery_tag: '🚚 ডেলিভারি সম্পূর্ণ ফ্রি!',
 
-  del_inside_title: 'ঢাকার মধ্যে ডেলিভারি',
-  del_inside_sub: '২৪ থেকে ৪৮ ঘণ্টার মধ্যে নিশ্চিত ডেলিভারি।',
+  spec_section_title: 'প্রোডাক্ট স্পেসিফিকেশন',
+  spec_item_1: '১০০% পিওর কটন ফেব্রিক দিয়ে তৈরি।',
+  spec_item_2: 'অত্যন্ত নরম, আরামদায়ক ও ব্রিদেবল।',
+  spec_item_3: 'আভিজাত্যপূর্ণ ও স্টাইলিশ সেমি-লং ফিটিং।',
+  spec_item_4: 'প্রিমিয়াম সুতার নিখুঁত এমব্রয়ডারি ও আফসান প্রিন্ট।',
+  spec_item_5: 'দৈনন্দিন ব্যবহার এবং যেকোনো অনুষ্ঠানের জন্য সেরা চয়েস।',
+
   del_inside_charge: 60,
-  del_outside_title: 'ঢাকার বাইরে ডেলিভারি',
-  del_outside_sub: '২ থেকে ৩ দিনের মধ্যে সারা দেশে হোম ডেলিভারি।',
   del_outside_charge: 120,
-
-  form_section_title: 'আপনার পছন্দের কালার ও সাইজ নির্বাচন করুন',
-  form_section_subtitle: 'একের অধিক কালার নিতে সংশ্লিষ্ট বক্সে টিক দিন এবং সাইজ বেছে নিন',
-  form_header_notice: '📋 কাস্টমার ডেলিভারি তথ্য (অর্ডার ফর্মটি পূরণ করুন)',
-  form_btn_text: '✓ অর্ডার কনফার্ম করুন',
-
-  contact_section_title: 'যেকোনো তথ্যের জন্য সরাসরি যোগাযোগ করুন',
+  office_address: 'শপ-২৩০, এমডি প্লাজা, মোহাম্মদপুর, ঢাকা-১২০৭, বাংলাদেশ।',
   contact_phone: '01700000000',
   contact_whatsapp: '01700000000',
-  office_address: 'শপ-২৩০, এমডি প্লাজা, মোহাম্মদপুর, ঢাকা-১২০৭, বাংলাদেশ।',
 
-  policy_about: 'স্বপ্ন লাইফস্টাইল বাংলাদেশের অন্যতম বিশ্বস্ত অনলাইন ফ্যাশন ব্র্যান্ড। আমরা আধুনিক ও রুচিশীল পুরুষদের জন্য সেরা মানের সুতি কাপড়ে তৈরি প্রিমিয়াম পাঞ্জাবি ও কাতুয়া সরবরাহ করি।',
-  policy_terms: '১. সারা বাংলাদেশে সম্পূর্ণ ক্যাশ অন ডেলিভারিতে কোনো অগ্রিম টাকা ছাড়াই অর্ডার করতে পারবেন।\n২. অর্ডার কনফার্ম করার পর আমাদের কাস্টমার সাপোর্ট টিম থেকে ফোন দিয়ে ঠিকানা ভেরিফাই করা হতে পারে।',
-  policy_return: '১. রাইডারের সামনে চেক: ডেলিভারি ম্যান থাকাকালীন প্রোডাক্টের সাইজ ও কোয়ালিটি ভালোভাবে চেক করে রিসিভ করবেন।\n২. ইনস্ট্যান্ট রিটার্ন: পণ্য পছন্দ না হলে বা সাইজে সমস্যা থাকলে ডেলিভারি চার্জ প্রদান করে সাথে সাথে রাইডারের কাছে রিটার্ন করতে পারবেন।',
-
-  fb_pixel_id: '',
-  tiktok_pixel_id: ''
+  policy_about: 'স্বপ্ন লাইফস্টাইল বাংলাদেশের অন্যতম বিশ্বস্ত অনলাইন ফ্যাশন ব্র্যান্ড।',
+  policy_terms: '১. সারা বাংলাদেশে সম্পূর্ণ ক্যাশ অন ডেলিভারিতে কোনো অগ্রিম টাকা ছাড়াই অর্ডার করতে পারবেন।',
+  policy_return: '১. রাইডারের সামনে চেক করে রিসিভ করবেন।'
 };
 
-// প্রোডাক্ট তালিকা (রেগুলার প্রাইস ও অফার প্রাইস সহ)
-let IN_MEMORY_PRODUCTS: any[] = [
+let IN_MEMORY_CMS = { ...DEFAULT_CMS };
+
+// ডিফল্ট পার্মানেন্ট প্রোডাক্ট তালিকা (কখনো খালি হবে না)
+const DEFAULT_PRODUCTS = [
   { id: 'prod_1', name: 'কাতুয়া - অলিভ গ্রিন', regular_price: 1050, price: 750, image: 'https://images.unsplash.com/photo-1596755094514-f87e34085b2c?auto=format&fit=crop&w=800&q=80' },
   { id: 'prod_2', name: 'কাতুয়া - রয়েল ব্লু', regular_price: 1050, price: 750, image: 'https://images.unsplash.com/photo-1507679799987-c73779587ccf?auto=format&fit=crop&w=800&q=80' },
   { id: 'prod_3', name: 'কাতুয়া - লাইট পিংক', regular_price: 1050, price: 750, image: 'https://images.unsplash.com/photo-1617137984095-74e4e5e3613f?auto=format&fit=crop&w=800&q=80' },
   { id: 'prod_4', name: 'কাতুয়া - মেরুন রেড', regular_price: 1050, price: 750, image: 'https://images.unsplash.com/photo-1598033129183-c4f50c736f10?auto=format&fit=crop&w=800&q=80' }
 ];
+
+let IN_MEMORY_PRODUCTS = [...DEFAULT_PRODUCTS];
 
 // টেলিগ্রাম নোটিফিকেশন
 async function sendTelegramAlert(orderData: any, items: any[]) {
@@ -131,7 +121,7 @@ async function sendTelegramAlert(orderData: any, items: any[]) {
     `💰 <b>সর্বমোট বিল:</b> <b>${orderData.grand_total} ৳</b>\n` +
     `💳 <b>পেমেন্ট:</b> ক্যাশ অন ডেলিভারি (COD)`;
 
-  const photos = Array.from(new Set(items.map((it: any) => it.image_url || IN_MEMORY_PRODUCTS[0].image)));
+  const photos = Array.from(new Set(items.map((it: any) => it.image_url || DEFAULT_PRODUCTS[0].image)));
 
   if (photos.length > 1) {
     try {
@@ -171,8 +161,11 @@ async function sendTelegramAlert(orderData: any, items: any[]) {
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', time: new Date() }));
 
-// ১. পাবলিক সাইটের সমস্ত ডেটা ফেচ
+// ১. স্টোর ডেটা ফেচ (কখনো খালি অবজেক্ট বা খালি অ্যারে দেবে না)
 app.get('/api/store-data', async (req: Request, res: Response) => {
+  if (IN_MEMORY_PRODUCTS.length === 0) {
+    IN_MEMORY_PRODUCTS = [...DEFAULT_PRODUCTS];
+  }
   res.json({
     content: IN_MEMORY_CMS,
     products: IN_MEMORY_PRODUCTS
@@ -227,8 +220,6 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
     };
 
     IN_MEMORY_ORDERS.unshift(newOrder);
-
-    // টেলিগ্রামে ছবিসহ পাঠানো
     sendTelegramAlert(newOrder, orderItems);
 
     res.json({
@@ -241,7 +232,7 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
   }
 });
 
-// ৩. অ্যাডমিন অর্ডার তালিকা
+// ৩. অ্যাডমিন অর্ডার লিস্ট
 app.get('/api/admin/orders', (req: Request, res: Response) => {
   const { status, search } = req.query;
   let list = [...IN_MEMORY_ORDERS];
@@ -262,7 +253,7 @@ app.get('/api/admin/orders', (req: Request, res: Response) => {
   res.json({ orders: list });
 });
 
-// ৪. অ্যাডমিন মেট্রিকস
+// ৪. মেট্রিকস
 app.get('/api/admin/metrics', (req: Request, res: Response) => {
   const list = IN_MEMORY_ORDERS;
   res.json({
@@ -275,10 +266,10 @@ app.get('/api/admin/metrics', (req: Request, res: Response) => {
   });
 });
 
-// ৫. কাস্টমার ও অর্ডার তথ্য পূর্ণাঙ্গ এডিট (New Feature)
+// ৫. কাস্টমার ও অর্ডার তথ্য এডিট
 app.post('/api/admin/orders/update-full', (req: Request, res: Response) => {
   try {
-    const { order_id, customer_name, customer_phone, shipping_district, shipping_address, product_name, quantity, grand_total, order_status } = req.body;
+    const { order_id, customer_name, customer_phone, shipping_district, shipping_address, grand_total, order_status } = req.body;
     const order = IN_MEMORY_ORDERS.find(o => o.id === order_id || o.order_number === order_id);
 
     if (order) {
@@ -288,12 +279,7 @@ app.post('/api/admin/orders/update-full', (req: Request, res: Response) => {
       if (shipping_address) order.shipping_address = shipping_address;
       if (order_status) order.order_status = order_status;
       if (grand_total) order.grand_total = Number(grand_total);
-
-      if (order.order_items && order.order_items.length > 0) {
-        if (product_name) order.order_items[0].product_name = product_name;
-        if (quantity) order.order_items[0].quantity = Number(quantity);
-      }
-      return res.json({ success: true, message: 'অর্ডার তথ্য সফলভাবে আপডেট হয়েছে!' });
+      return res.json({ success: true, message: 'অর্ডার তথ্য আপডেট হয়েছে!' });
     }
     res.status(404).json({ success: false, message: 'অর্ডার পাওয়া যায়নি।' });
   } catch (err: any) {
@@ -301,7 +287,7 @@ app.post('/api/admin/orders/update-full', (req: Request, res: Response) => {
   }
 });
 
-// ৬. অর্ডার স্ট্যাটাস আপডেট
+// ৬. অর্ডার স্ট্যাটাস
 app.post('/api/admin/orders/update-status', (req: Request, res: Response) => {
   const { order_id, status } = req.body;
   const o = IN_MEMORY_ORDERS.find(x => x.id === order_id || x.order_number === order_id);
@@ -316,7 +302,7 @@ app.post('/api/admin/orders/delete', (req: Request, res: Response) => {
   res.json({ success: true });
 });
 
-// ৮. সিঙ্গল CMS টেক্সট এডিটর (১০০% নির্ভরযোগ্য)
+// ৮. CMS টেক্সট এডিট
 app.post('/api/admin/cms/update-single', (req: Request, res: Response) => {
   const { field, value } = req.body;
   if (field) {
@@ -325,7 +311,7 @@ app.post('/api/admin/cms/update-single', (req: Request, res: Response) => {
   res.json({ success: true, message: 'সফলভাবে সংরক্ষিত হয়েছে!' });
 });
 
-// ৯. প্রোডাক্ট আপডেট ও এডিট (New Feature)
+// ৯. প্রোডাক্ট আপডেট
 app.post('/api/admin/products/update', (req: Request, res: Response) => {
   const { id, name, regular_price, price, image } = req.body;
   const p = IN_MEMORY_PRODUCTS.find(x => x.id === id);
@@ -357,6 +343,9 @@ app.post('/api/admin/products/add', (req: Request, res: Response) => {
 app.post('/api/admin/products/delete', (req: Request, res: Response) => {
   const { id } = req.body;
   IN_MEMORY_PRODUCTS = IN_MEMORY_PRODUCTS.filter(p => p.id !== id);
+  if (IN_MEMORY_PRODUCTS.length === 0) {
+    IN_MEMORY_PRODUCTS = [...DEFAULT_PRODUCTS];
+  }
   res.json({ success: true });
 });
 
