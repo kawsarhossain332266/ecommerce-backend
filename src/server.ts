@@ -18,40 +18,46 @@ const telegramChatId = process.env.TELEGRAM_CHAT_ID || '';
 
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-// পণ্য অনুযায়ী আসল ছবির ম্যাপিং
-const COLOR_IMAGE_MAP: Record<string, string> = {
+// পণ্য অনুযায়ী হাই-রেজ্যুলেশন আসল ছবি
+const DEFAULT_IMAGES = {
   olive: 'https://images.unsplash.com/photo-1596755094514-f87e34085b2c?auto=format&fit=crop&w=800&q=80',
   blue: 'https://images.unsplash.com/photo-1507679799987-c73779587ccf?auto=format&fit=crop&w=800&q=80',
   pink: 'https://images.unsplash.com/photo-1617137984095-74e4e5e3613f?auto=format&fit=crop&w=800&q=80',
   maroon: 'https://images.unsplash.com/photo-1598033129183-c4f50c736f10?auto=format&fit=crop&w=800&q=80'
 };
 
-// ছবিসহ টেলিগ্রাম নোটিফিকেশন পাঠানোর উন্নত ফাংশন (sendPhoto)
-async function sendTelegramAlertWithPhoto(orderData: any, items: any[]): Promise<any> {
+// পণ্যের সঠিক ছবি শনাক্তকারী ফাংশন (বাংলা সব ভ্যারিয়েন্ট সাপোর্ট করে)
+function getExactPhotoForItem(item: any): string {
+  if (item.image_url && String(item.image_url).startsWith('http')) {
+    return item.image_url;
+  }
+  const name = String(item.product_name || '').toLowerCase();
+  
+  if (name.includes('blue') || name.includes('রয়েল') || name.includes('রয়েল') || name.includes('নীল')) {
+    return DEFAULT_IMAGES.blue;
+  }
+  if (name.includes('pink') || name.includes('পিংক') || name.includes('গোলাপি')) {
+    return DEFAULT_IMAGES.pink;
+  }
+  if (name.includes('maroon') || name.includes('মেরুন') || name.includes('red') || name.includes('রেড') || name.includes('লাল')) {
+    return DEFAULT_IMAGES.maroon;
+  }
+  return DEFAULT_IMAGES.olive;
+}
+
+// অর্ডারকৃত সব পণ্যের ছবি একসাথে টেলিগ্রামে পাঠানোর স্মার্ট ফাংশন
+async function sendTelegramOrderNotification(orderData: any, items: any[]): Promise<any> {
   if (!telegramBotToken || !telegramChatId) {
-    console.error('Telegram Token or Chat ID missing!');
-    return { error: 'Token/ChatID missing' };
+    console.error('Telegram Bot Token or Chat ID is missing!');
+    return { error: 'Token or ChatID missing' };
   }
 
-  // কাস্টমার কোন কালার অর্ডার করেছে তা শনাক্ত করে সঠিক ছবি বেছে নেওয়া
-  let selectedPhoto = COLOR_IMAGE_MAP.olive;
-  const firstItemName = (items[0]?.product_name || '').toLowerCase();
-
-  if (firstItemName.includes('রয়েল') || firstItemName.includes('রয়্যাল') || firstItemName.includes('blue')) {
-    selectedPhoto = COLOR_IMAGE_MAP.blue;
-  } else if (firstItemName.includes('পিংক') || firstItemName.includes('pink')) {
-    selectedPhoto = COLOR_IMAGE_MAP.pink;
-  } else if (firstItemName.includes('মেরুন') || firstItemName.includes('maroon') || firstItemName.includes('রেড')) {
-    selectedPhoto = COLOR_IMAGE_MAP.maroon;
-  }
-
-  // পণ্যের বিবরণ তৈরি
+  // অর্ডারকৃত পণ্যগুলোর তালিকা তৈরি
   let itemList = '';
   items.forEach((item, index) => {
     itemList += `<b>${index + 1}.</b> ${item.product_name} x <b>${item.quantity}</b> = ${item.total_price} ৳\n`;
   });
 
-  // ছবির নিচের বিস্তারিত ক্যাপশন
   const caption = `🛍️ <b>নতুন অর্ডার এসেছে!</b> (<code>${orderData.order_number}</code>)\n\n` +
     `👤 <b>গ্রাহক:</b> ${orderData.customer_name}\n` +
     `📞 <b>ফোন:</b> <code>${orderData.customer_phone}</code>\n` +
@@ -62,32 +68,56 @@ async function sendTelegramAlertWithPhoto(orderData: any, items: any[]): Promise
     `💰 <b>সর্বমোট বিল:</b> <b>${orderData.grand_total} ৳</b>\n` +
     `💳 <b>পেমেন্ট:</b> ক্যাশ অন ডেলিভারি (COD)`;
 
-  // ১. সরাসরি ছবিসহ টেলিগ্রামে পাঠানো (sendPhoto API)
-  const photoUrl = `https://api.telegram.org/bot${telegramBotToken}/sendPhoto`;
-  
+  // অর্ডারকৃত পণ্যগুলোর ইউনিক ছবির তালিকা সংগ্রহ
+  const photos = items.map(getExactPhotoForItem);
+  const uniquePhotos: string[] = Array.from(new Set(photos));
+
+  // কেস ১: যদি একাধিক পণ্যের ছবি থাকে (Send as Album / Media Group)
+  if (uniquePhotos.length > 1) {
+    const mediaGroupUrl = `https://api.telegram.org/bot${telegramBotToken}/sendMediaGroup`;
+    const mediaPayload = uniquePhotos.slice(0, 5).map((photoUrl, idx) => ({
+      type: 'photo',
+      media: photoUrl,
+      caption: idx === 0 ? caption : undefined,
+      parse_mode: 'HTML'
+    }));
+
+    try {
+      const groupRes = await fetch(mediaGroupUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: telegramChatId,
+          media: mediaPayload
+        })
+      });
+      const groupResult = await groupRes.json();
+      if (groupResult.ok) return groupResult;
+    } catch (e) {
+      console.warn('sendMediaGroup failed, trying single photo fallback');
+    }
+  }
+
+  // কেস ২: যদি ১টি পণ্যের ছবি থাকে (Send Single Photo)
+  const singlePhotoUrl = `https://api.telegram.org/bot${telegramBotToken}/sendPhoto`;
   try {
-    const photoRes = await fetch(photoUrl, {
+    const photoRes = await fetch(singlePhotoUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         chat_id: telegramChatId,
-        photo: selectedPhoto,
+        photo: uniquePhotos[0] || DEFAULT_IMAGES.olive,
         caption: caption,
         parse_mode: 'HTML'
       })
     });
-    
-    const result = await photoRes.json();
-    if (result.ok) {
-      console.log('Telegram photo alert sent successfully!');
-      return result;
-    }
-    console.warn('sendPhoto failed, trying fallback to text:', result);
+    const photoResult = await photoRes.json();
+    if (photoResult.ok) return photoResult;
   } catch (err) {
-    console.error('sendPhoto network error:', err);
+    console.warn('sendPhoto failed, trying text fallback');
   }
 
-  // ২. কোনো কারণে ছবি পাঠাতে সমস্যা হলে টেক্সট মেসেজ পাঠানো (যাতে অর্ডার মিস না হয়)
+  // কেস ৩: কোনো কারণে ছবি না গেলে টেক্সট মেসেজ পাঠানো
   const textUrl = `https://api.telegram.org/bot${telegramBotToken}/sendMessage`;
   try {
     const textRes = await fetch(textUrl, {
@@ -100,9 +130,9 @@ async function sendTelegramAlertWithPhoto(orderData: any, items: any[]): Promise
       })
     });
     return await textRes.json();
-  } catch (e) {
-    console.error('sendMessage fallback error:', e);
-    return { error: e };
+  } catch (err) {
+    console.error('Telegram text dispatch failed:', err);
+    return { error: err };
   }
 }
 
@@ -110,32 +140,6 @@ app.get('/api/health', (req: Request, res: Response) => {
   res.json({ status: 'ok', timestamp: new Date() });
 });
 
-// সরাসরি ছবিসহ টেলিগ্রাম টেস্ট লিংক
-app.get('/api/test-telegram', async (req: Request, res: Response) => {
-  if (!telegramBotToken || !telegramChatId) {
-    return res.json({ success: false, error: 'Telegram credentials missing.' });
-  }
-
-  const testUrl = `https://api.telegram.org/bot${telegramBotToken}/sendPhoto`;
-  try {
-    const tgRes = await fetch(testUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: telegramChatId,
-        photo: COLOR_IMAGE_MAP.olive,
-        caption: '🔔 <b>টেস্ট ফটো অ্যালার্ট:</b> অভিনন্দন! ছবিসহ আপনার টেলিগ্রাম নোটিফিকেশন সিস্টেম সম্পূর্ণ সক্রিয়।',
-        parse_mode: 'HTML'
-      })
-    });
-    const result = await tgRes.json();
-    res.json({ success: result.ok, telegram_response: result });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// চেকআউট এন্ডপয়েন্ট (ছবিসহ টেলিগ্রামে পাঠানোর লজিক)
 app.post('/api/checkout', async (req: Request, res: Response) => {
   try {
     const { customer_name, customer_phone, shipping_district, shipping_address, items } = req.body;
@@ -144,7 +148,7 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'সকল প্রয়োজনীয় তথ্য প্রদান করুন।' });
     }
 
-    const orderItems = items && items.length > 0 ? items : [{ product_name: 'কাতুয়া - অলিভ গ্রিন (L)', quantity: 1, total_price: 750 }];
+    const orderItems = items && items.length > 0 ? items : [{ product_name: 'কাতুয়া - অলিভ গ্রিন (L)', quantity: 1, total_price: 750 }];
     
     let subtotal = 0;
     orderItems.forEach((it: any) => {
@@ -167,10 +171,9 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
       grand_total: grandTotal
     };
 
-    // সরাসরি ছবিসহ টেলিগ্রামে অ্যালার্ট পাঠানো
-    const telegramResult = await sendTelegramAlertWithPhoto(orderRecord, orderItems);
+    // অর্ডারকৃত পণ্যের সঠিক ছবিসহ টেলিগ্রামে পাঠানো
+    const telegramResult = await sendTelegramOrderNotification(orderRecord, orderItems);
 
-    // ডাটাবেসে ব্যাকআপ লগ
     try {
       await supabase.from('orders').insert({
         order_number: orderNumber,
@@ -185,7 +188,7 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
         order_status: 'pending'
       });
     } catch (dbErr) {
-      console.log('Database backup log skipped');
+      console.log('Database backup log');
     }
 
     res.json({
