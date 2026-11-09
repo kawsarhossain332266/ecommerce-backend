@@ -34,8 +34,17 @@ if (supabaseUrl && supabaseServiceKey) {
 }
 
 let IN_MEMORY_ORDERS: any[] = [];
+let IN_MEMORY_INCOMPLETE_ORDERS: any[] = [];
 
-// ডিফল্ট পার্মানেন্ট CMS
+// ডিফল্ট স্পেসিফিকেশন তালিকা
+const DEFAULT_SPECS = [
+  '১০০% পিওর কটন ফেব্রিক দিয়ে তৈরি।',
+  'অত্যন্ত নরম, আরামদায়ক ও ব্রিদেবল।',
+  'আভিজাত্যপূর্ণ ও স্টাইলিশ সেমি-লং ফিটিং।',
+  'প্রিমিয়াম সুতার নিখুঁত এমব্রয়ডারি ও আফসান প্রিন্ট।',
+  'দৈনন্দিন ব্যবহার এবং যেকোনো অনুষ্ঠানের জন্য সেরা চয়েস।'
+];
+
 const DEFAULT_CMS: Record<string, any> = {
   show_hero: true,
   show_gallery: true,
@@ -91,11 +100,7 @@ const DEFAULT_CMS: Record<string, any> = {
   combo3_delivery_tag: '🚚 ডেলিভারি সম্পূর্ণ ফ্রি!',
 
   spec_section_title: 'প্রোডাক্ট স্পেসিফিকেশন',
-  spec_item_1: '১০০% পিওর কটন ফেব্রিক দিয়ে তৈরি।',
-  spec_item_2: 'অত্যন্ত নরম, আরামদায়ক ও ব্রিদেবল।',
-  spec_item_3: 'আভিজাত্যপূর্ণ ও স্টাইলিশ সেমি-লং ফিটিং।',
-  spec_item_4: 'প্রিমিয়াম সুতার নিখুঁত এমব্রয়ডারি ও আফসান প্রিন্ট।',
-  spec_item_5: 'দৈনন্দিন ব্যবহার এবং যেকোনো অনুষ্ঠানের জন্য সেরা চয়েস।',
+  specifications_list: DEFAULT_SPECS,
 
   del_inside_charge: 60,
   del_outside_charge: 120,
@@ -180,13 +185,16 @@ async function sendTelegramAlert(orderData: any, items: any[]) {
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', time: new Date() }));
 
-// ১. স্টোর ডেটা ফেচ (Supabase থেকে পার্মানেন্ট ডেটা লোড)
+// ১. স্টোর ডেটা ফেচ
 app.get('/api/store-data', async (req: Request, res: Response) => {
   if (supabase) {
     try {
       const { data: dbData } = await supabase.from('site_content').select('*').eq('id', 'master_content').maybeSingle();
       if (dbData) {
         IN_MEMORY_CMS = { ...IN_MEMORY_CMS, ...dbData };
+        if (dbData.specifications_list && Array.isArray(dbData.specifications_list)) {
+          IN_MEMORY_CMS.specifications_list = dbData.specifications_list;
+        }
         if (dbData.products_json && Array.isArray(dbData.products_json) && dbData.products_json.length > 0) {
           IN_MEMORY_PRODUCTS = dbData.products_json;
         }
@@ -199,13 +207,56 @@ app.get('/api/store-data', async (req: Request, res: Response) => {
   });
 });
 
-// ২. অর্ডার গ্রহণ
+// ২. ইনকমপ্লিট অর্ডার কালেকশন (Abandoned Cart Recovery)
+app.post('/api/incomplete-order', (req: Request, res: Response) => {
+  try {
+    const { customer_name, customer_phone, shipping_district, shipping_address, product_name, estimated_total } = req.body;
+    if (!customer_phone || customer_phone.length < 11) {
+      return res.json({ success: false });
+    }
+
+    // আগের ইনকমপ্লিট থাকলে আপডেট অথবা নতুন তৈরি
+    const existingIdx = IN_MEMORY_INCOMPLETE_ORDERS.findIndex(x => x.customer_phone === customer_phone);
+    const incOrder = {
+      id: 'inc_' + Date.now(),
+      customer_name: customer_name || 'নাম লিখেননি',
+      customer_phone,
+      shipping_district: shipping_district || 'বাছাই করেননি',
+      shipping_address: shipping_address || 'ঠিকানা লিখেননি',
+      product_name: product_name || 'কাতুয়া কালেকশন',
+      estimated_total: Number(estimated_total) || 810,
+      created_at: new Date().toISOString()
+    };
+
+    if (existingIdx > -1) {
+      IN_MEMORY_INCOMPLETE_ORDERS[existingIdx] = incOrder;
+    } else {
+      IN_MEMORY_INCOMPLETE_ORDERS.unshift(incOrder);
+    }
+
+    if (supabase) {
+      supabase.from('incomplete_orders').upsert(incOrder).catch(() => {});
+    }
+
+    res.json({ success: true });
+  } catch (err: any) {
+    res.json({ success: false });
+  }
+});
+
+// ৩. অর্ডার গ্রহণ (অর্ডার সফল হলে ইনকমপ্লিট থেকে স্বয়ংক্রিয়ভাবে মুছে যাবে)
 app.post('/api/checkout', async (req: Request, res: Response) => {
   try {
     const { customer_name, customer_phone, shipping_district, shipping_address, items } = req.body;
 
     if (!customer_name || !customer_phone || !shipping_address) {
       return res.status(400).json({ success: false, error: 'সব প্রয়োজনীয় তথ্য দিন।' });
+    }
+
+    // অর্ডার সম্পূর্ণ হওয়ায় ইনকমপ্লিট তালিকা থেকে কাস্টমারকে রিমুভ করা
+    IN_MEMORY_INCOMPLETE_ORDERS = IN_MEMORY_INCOMPLETE_ORDERS.filter(x => x.customer_phone !== customer_phone);
+    if (supabase) {
+      supabase.from('incomplete_orders').delete().eq('customer_phone', customer_phone).catch(() => {});
     }
 
     const orderItems = items && items.length > 0 ? items : [{ product_name: 'কাতুয়া - অলিভ গ্রিন', quantity: 1, total_price: 750 }];
@@ -248,7 +299,6 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
 
     IN_MEMORY_ORDERS.unshift(newOrder);
 
-    // Supabase-এ স্থায়ী সেভ
     if (supabase) {
       supabase.from('orders').insert({
         order_number: orderNumber,
@@ -286,6 +336,66 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
+});
+
+// ৪. ইনকমপ্লিট অর্ডার ফেচ
+app.get('/api/admin/incomplete-orders', (req: Request, res: Response) => {
+  res.json({ incomplete_orders: IN_MEMORY_INCOMPLETE_ORDERS });
+});
+
+// ৫. ডুপ্লিকেট কাস্টমার ফেচ (একই ফোন নম্বরে একাধিক অর্ডার শনাক্তকরণ)
+app.get('/api/admin/duplicate-customers', (req: Request, res: Response) => {
+  const groups: Record<string, any> = {};
+
+  IN_MEMORY_ORDERS.forEach(o => {
+    const phone = o.customer_phone;
+    if (!groups[phone]) {
+      groups[phone] = {
+        customer_name: o.customer_name,
+        customer_phone: phone,
+        orders_count: 0,
+        total_spent: 0,
+        orders: []
+      };
+    }
+    groups[phone].orders_count += 1;
+    groups[phone].total_spent += Number(o.grand_total || 0);
+    groups[phone].orders.push(o);
+  });
+
+  // শুধু যাদের অর্ডার ১টির বেশি তাদের ফিল্টার করা
+  const duplicates = Object.values(groups).filter((g: any) => g.orders_count > 1);
+  res.json({ duplicate_customers: duplicates });
+});
+
+// ৬. অর্ডার অ্যানালাইসিস মেট্রিকস (প্রকৃত ডেটাবেজের রিয়েল হিসাব)
+app.get('/api/admin/order-analysis', (req: Request, res: Response) => {
+  const all = IN_MEMORY_ORDERS;
+  const totalRevenue = all.reduce((sum, o) => sum + Number(o.grand_total || 0), 0);
+  const avgOrderValue = all.length > 0 ? Math.round(totalRevenue / all.length) : 0;
+
+  // গ্রাহক রিপিট রেট
+  const phoneSet = new Set();
+  let repeatCount = 0;
+  all.forEach(o => {
+    if (phoneSet.has(o.customer_phone)) repeatCount++;
+    else phoneSet.add(o.customer_phone);
+  });
+
+  res.json({
+    total_orders: all.length,
+    total_revenue: totalRevenue,
+    avg_order_value: avgOrderValue,
+    incomplete_orders_count: IN_MEMORY_INCOMPLETE_ORDERS.length,
+    repeat_customers_count: repeatCount,
+    status_stats: {
+      pending: all.filter(o => o.order_status === 'pending').length,
+      processing: all.filter(o => o.order_status === 'processing').length,
+      shipped: all.filter(o => o.order_status === 'shipped').length,
+      delivered: all.filter(o => o.order_status === 'delivered').length,
+      cancelled: all.filter(o => o.order_status === 'cancelled').length
+    }
+  });
 });
 
 app.get('/api/admin/orders', (req: Request, res: Response) => {
@@ -353,7 +463,7 @@ app.post('/api/admin/orders/delete', (req: Request, res: Response) => {
   res.json({ success: true });
 });
 
-// ৮. CMS টেক্সট ও টগল এডিটর (Supabase-এ ১০০% পার্মানেন্ট Upsert)
+// ৭. CMS টেক্সট এডিটর
 app.post('/api/admin/cms/update-single', async (req: Request, res: Response) => {
   try {
     const { field, value } = req.body;
@@ -370,7 +480,22 @@ app.post('/api/admin/cms/update-single', async (req: Request, res: Response) => 
   }
 });
 
-// ৯. প্রোডাক্ট আপডেট ও স্থায়ী সেভ
+// ৮. স্পেসিফিকেশন সম্পূর্ণ তালিকা সেভ (Add New Specification Engine)
+app.post('/api/admin/cms/update-specs', async (req: Request, res: Response) => {
+  try {
+    const { specs } = req.body;
+    if (Array.isArray(specs)) {
+      IN_MEMORY_CMS.specifications_list = specs;
+      if (supabase) {
+        await supabase.from('site_content').upsert({ id: 'master_content', specifications_list: specs, updated_at: new Date().toISOString() });
+      }
+    }
+    res.json({ success: true, message: 'স্পেসিফিকেশন সংরক্ষিত হয়েছে!' });
+  } catch (e: any) {
+    res.json({ success: true });
+  }
+});
+
 app.post('/api/admin/products/update', async (req: Request, res: Response) => {
   const { id, name, regular_price, price, image } = req.body;
   const p = IN_MEMORY_PRODUCTS.find(x => x.id === id);
@@ -388,7 +513,6 @@ app.post('/api/admin/products/update', async (req: Request, res: Response) => {
   res.status(404).json({ success: false, message: 'প্রোডাক্ট পাওয়া যায়নি' });
 });
 
-// ১০. নতুন প্রোডাক্ট যোগ ও স্থায়ী সেভ
 app.post('/api/admin/products/add', async (req: Request, res: Response) => {
   const { name, regular_price, price, image } = req.body;
   const newProd = {
@@ -406,7 +530,6 @@ app.post('/api/admin/products/add', async (req: Request, res: Response) => {
   res.json({ success: true, product: newProd });
 });
 
-// ১১. প্রোডাক্ট ডিলিট
 app.post('/api/admin/products/delete', async (req: Request, res: Response) => {
   const { id } = req.body;
   IN_MEMORY_PRODUCTS = IN_MEMORY_PRODUCTS.filter(p => p.id !== id);
@@ -419,4 +542,4 @@ app.post('/api/admin/products/delete', async (req: Request, res: Response) => {
   res.json({ success: true });
 });
 
-app.listen(PORT, () => console.log(`Master API live on port ${PORT}`));
+app.listen(PORT, () => console.log(`Master Server live on port ${PORT}`));
