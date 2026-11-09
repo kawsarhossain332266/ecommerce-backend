@@ -34,16 +34,7 @@ if (supabaseUrl && supabaseServiceKey) {
 }
 
 let IN_MEMORY_ORDERS: any[] = [];
-let IN_MEMORY_INCOMPLETE_ORDERS: any[] = [];
-
-// ডিফল্ট স্পেসিফিকেশন তালিকা
-const DEFAULT_SPECS = [
-  '১০০% পিওর কটন ফেব্রিক দিয়ে তৈরি।',
-  'অত্যন্ত নরম, আরামদায়ক ও ব্রিদেবল।',
-  'আভিজাত্যপূর্ণ ও স্টাইলিশ সেমি-লং ফিটিং।',
-  'প্রিমিয়াম সুতার নিখুঁত এমব্রয়ডারি ও আফসান প্রিন্ট।',
-  'দৈনন্দিন ব্যবহার এবং যেকোনো অনুষ্ঠানের জন্য সেরা চয়েস।'
-];
+let IN_MEMORY_INCOMPLETE: any[] = [];
 
 const DEFAULT_CMS: Record<string, any> = {
   show_hero: true,
@@ -100,7 +91,13 @@ const DEFAULT_CMS: Record<string, any> = {
   combo3_delivery_tag: '🚚 ডেলিভারি সম্পূর্ণ ফ্রি!',
 
   spec_section_title: 'প্রোডাক্ট স্পেসিফিকেশন',
-  specifications_list: DEFAULT_SPECS,
+  dynamic_specs: [
+    '১০০% পিওর কটন ফেব্রিক দিয়ে তৈরি।',
+    'অত্যন্ত নরম, আরামদায়ক ও ব্রিদেবল।',
+    'আভিজাত্যপূর্ণ ও স্টাইলিশ সেমি-লং ফিটিং।',
+    'প্রিমিয়াম সুতার নিখুঁত এমব্রয়ডারি ও আফসান প্রিন্ট।',
+    'দৈনন্দিন ব্যবহার এবং যেকোনো অনুষ্ঠানের জন্য সেরা চয়েস।'
+  ],
 
   del_inside_charge: 60,
   del_outside_charge: 120,
@@ -126,7 +123,7 @@ const DEFAULT_PRODUCTS = [
 
 let IN_MEMORY_PRODUCTS = [...DEFAULT_PRODUCTS];
 
-// টেলিগ্রাম ফটো অ্যালার্ট
+// টেলিগ্রাম নোটিফিকেশন
 async function sendTelegramAlert(orderData: any, items: any[]) {
   if (!telegramBotToken || !telegramChatId) return;
 
@@ -192,9 +189,6 @@ app.get('/api/store-data', async (req: Request, res: Response) => {
       const { data: dbData } = await supabase.from('site_content').select('*').eq('id', 'master_content').maybeSingle();
       if (dbData) {
         IN_MEMORY_CMS = { ...IN_MEMORY_CMS, ...dbData };
-        if (dbData.specifications_list && Array.isArray(dbData.specifications_list)) {
-          IN_MEMORY_CMS.specifications_list = dbData.specifications_list;
-        }
         if (dbData.products_json && Array.isArray(dbData.products_json) && dbData.products_json.length > 0) {
           IN_MEMORY_PRODUCTS = dbData.products_json;
         }
@@ -207,44 +201,34 @@ app.get('/api/store-data', async (req: Request, res: Response) => {
   });
 });
 
-// ২. ইনকমপ্লিট অর্ডার কালেকশন (Abandoned Cart Recovery)
+// ২. ইনকমপ্লিট অর্ডার ট্র্যাকিং এন্ডপয়েন্ট (New)
 app.post('/api/incomplete-order', (req: Request, res: Response) => {
-  try {
-    const { customer_name, customer_phone, shipping_district, shipping_address, product_name, estimated_total } = req.body;
-    if (!customer_phone || customer_phone.length < 11) {
-      return res.json({ success: false });
-    }
-
-    // আগের ইনকমপ্লিট থাকলে আপডেট অথবা নতুন তৈরি
-    const existingIdx = IN_MEMORY_INCOMPLETE_ORDERS.findIndex(x => x.customer_phone === customer_phone);
-    const incOrder = {
-      id: 'inc_' + Date.now(),
-      customer_name: customer_name || 'নাম লিখেননি',
-      customer_phone,
-      shipping_district: shipping_district || 'বাছাই করেননি',
-      shipping_address: shipping_address || 'ঠিকানা লিখেননি',
-      product_name: product_name || 'কাতুয়া কালেকশন',
-      estimated_total: Number(estimated_total) || 810,
-      created_at: new Date().toISOString()
-    };
-
-    if (existingIdx > -1) {
-      IN_MEMORY_INCOMPLETE_ORDERS[existingIdx] = incOrder;
-    } else {
-      IN_MEMORY_INCOMPLETE_ORDERS.unshift(incOrder);
-    }
-
-    if (supabase) {
-      supabase.from('incomplete_orders').upsert(incOrder).catch(() => {});
-    }
-
-    res.json({ success: true });
-  } catch (err: any) {
-    res.json({ success: false });
+  const { customer_name, customer_phone, shipping_district, shipping_address, items } = req.body;
+  if (!customer_phone || customer_phone.length < 11) {
+    return res.json({ success: false });
   }
+
+  const existingIdx = IN_MEMORY_INCOMPLETE.findIndex(o => o.customer_phone === customer_phone);
+  const incRecord = {
+    id: 'inc_' + Date.now(),
+    customer_name: customer_name || 'নাম লিখেননি',
+    customer_phone,
+    shipping_district: shipping_district || 'ঢাকা',
+    shipping_address: shipping_address || 'ঠিকানা লিখেননি',
+    items: items || [],
+    created_at: new Date().toISOString()
+  };
+
+  if (existingIdx !== -1) {
+    IN_MEMORY_INCOMPLETE[existingIdx] = incRecord;
+  } else {
+    IN_MEMORY_INCOMPLETE.unshift(incRecord);
+  }
+
+  res.json({ success: true });
 });
 
-// ৩. অর্ডার গ্রহণ (অর্ডার সফল হলে ইনকমপ্লিট থেকে স্বয়ংক্রিয়ভাবে মুছে যাবে)
+// ৩. সম্পূর্ণ অর্ডার প্লেসমেন্ট
 app.post('/api/checkout', async (req: Request, res: Response) => {
   try {
     const { customer_name, customer_phone, shipping_district, shipping_address, items } = req.body;
@@ -253,11 +237,8 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'সব প্রয়োজনীয় তথ্য দিন।' });
     }
 
-    // অর্ডার সম্পূর্ণ হওয়ায় ইনকমপ্লিট তালিকা থেকে কাস্টমারকে রিমুভ করা
-    IN_MEMORY_INCOMPLETE_ORDERS = IN_MEMORY_INCOMPLETE_ORDERS.filter(x => x.customer_phone !== customer_phone);
-    if (supabase) {
-      supabase.from('incomplete_orders').delete().eq('customer_phone', customer_phone).catch(() => {});
-    }
+    // ইনকমপ্লিট লিস্ট থেকে রিমুভ (যেহেতু এখন সফলভাবে অর্ডার সম্পন্ন করেছে)
+    IN_MEMORY_INCOMPLETE = IN_MEMORY_INCOMPLETE.filter(x => x.customer_phone !== customer_phone);
 
     const orderItems = items && items.length > 0 ? items : [{ product_name: 'কাতুয়া - অলিভ গ্রিন', quantity: 1, total_price: 750 }];
     
@@ -338,71 +319,35 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
   }
 });
 
-// ৪. ইনকমপ্লিট অর্ডার ফেচ
-app.get('/api/admin/incomplete-orders', (req: Request, res: Response) => {
-  res.json({ incomplete_orders: IN_MEMORY_INCOMPLETE_ORDERS });
-});
-
-// ৫. ডুপ্লিকেট কাস্টমার ফেচ (একই ফোন নম্বরে একাধিক অর্ডার শনাক্তকরণ)
-app.get('/api/admin/duplicate-customers', (req: Request, res: Response) => {
-  const groups: Record<string, any> = {};
-
-  IN_MEMORY_ORDERS.forEach(o => {
-    const phone = o.customer_phone;
-    if (!groups[phone]) {
-      groups[phone] = {
-        customer_name: o.customer_name,
-        customer_phone: phone,
-        orders_count: 0,
-        total_spent: 0,
-        orders: []
-      };
-    }
-    groups[phone].orders_count += 1;
-    groups[phone].total_spent += Number(o.grand_total || 0);
-    groups[phone].orders.push(o);
-  });
-
-  // শুধু যাদের অর্ডার ১টির বেশি তাদের ফিল্টার করা
-  const duplicates = Object.values(groups).filter((g: any) => g.orders_count > 1);
-  res.json({ duplicate_customers: duplicates });
-});
-
-// ৬. অর্ডার অ্যানালাইসিস মেট্রিকস (প্রকৃত ডেটাবেজের রিয়েল হিসাব)
-app.get('/api/admin/order-analysis', (req: Request, res: Response) => {
-  const all = IN_MEMORY_ORDERS;
-  const totalRevenue = all.reduce((sum, o) => sum + Number(o.grand_total || 0), 0);
-  const avgOrderValue = all.length > 0 ? Math.round(totalRevenue / all.length) : 0;
-
-  // গ্রাহক রিপিট রেট
-  const phoneSet = new Set();
-  let repeatCount = 0;
-  all.forEach(o => {
-    if (phoneSet.has(o.customer_phone)) repeatCount++;
-    else phoneSet.add(o.customer_phone);
-  });
-
-  res.json({
-    total_orders: all.length,
-    total_revenue: totalRevenue,
-    avg_order_value: avgOrderValue,
-    incomplete_orders_count: IN_MEMORY_INCOMPLETE_ORDERS.length,
-    repeat_customers_count: repeatCount,
-    status_stats: {
-      pending: all.filter(o => o.order_status === 'pending').length,
-      processing: all.filter(o => o.order_status === 'processing').length,
-      shipped: all.filter(o => o.order_status === 'shipped').length,
-      delivered: all.filter(o => o.order_status === 'delivered').length,
-      cancelled: all.filter(o => o.order_status === 'cancelled').length
-    }
-  });
-});
-
+// ৪. অ্যাডমিন অর্ডার তালিকা (স্মার্ট ডুপ্লিকেট ও ইনকমপ্লিট হ্যান্ডলার সহ)
 app.get('/api/admin/orders', (req: Request, res: Response) => {
   const { status, search } = req.query;
+
+  // ইনকমপ্লিট অর্ডার চাওয়া হলে
+  if (status === 'incomplete') {
+    return res.json({ orders: IN_MEMORY_INCOMPLETE });
+  }
+
+  // ডুপ্লিকেট কাস্টমার চাওয়া হলে
+  if (status === 'duplicates') {
+    const phoneCounts: Record<string, number> = {};
+    IN_MEMORY_ORDERS.forEach(o => {
+      phoneCounts[o.customer_phone] = (phoneCounts[o.customer_phone] || 0) + 1;
+    });
+    const duplicateOrders = IN_MEMORY_ORDERS.filter(o => phoneCounts[o.customer_phone] > 1);
+    return res.json({ orders: duplicateOrders });
+  }
+
   let list = [...IN_MEMORY_ORDERS];
 
-  if (status && status !== 'all') {
+  // সাধারণ পেন্ডিং থেকে ডুপ্লিকেট আলাদা রাখা (আপনার ৪ নম্বর রিকোয়ারমেন্ট অনুযায়ী)
+  if (status === 'pending') {
+    const phoneCounts: Record<string, number> = {};
+    IN_MEMORY_ORDERS.forEach(o => {
+      phoneCounts[o.customer_phone] = (phoneCounts[o.customer_phone] || 0) + 1;
+    });
+    list = list.filter(o => o.order_status === 'pending' && phoneCounts[o.customer_phone] === 1);
+  } else if (status && status !== 'all') {
     list = list.filter(o => o.order_status === status);
   }
 
@@ -418,6 +363,51 @@ app.get('/api/admin/orders', (req: Request, res: Response) => {
   res.json({ orders: list });
 });
 
+// ৫. পূর্ণাঙ্গ অর্ডার অ্যানালাইসিস API (New)
+app.get('/api/admin/analytics', (req: Request, res: Response) => {
+  const all = IN_MEMORY_ORDERS;
+  const now = new Date();
+  const todayStr = now.toISOString().slice(0, 10);
+
+  let totalRevenue = 0;
+  let todayRevenue = 0;
+  let todayOrders = 0;
+
+  all.forEach(o => {
+    totalRevenue += Number(o.grand_total || 0);
+    if (o.created_at && o.created_at.startsWith(todayStr)) {
+      todayRevenue += Number(o.grand_total || 0);
+      todayOrders += 1;
+    }
+  });
+
+  const phoneMap: Record<string, { count: number; totalSpent: number; name: string }> = {};
+  all.forEach(o => {
+    if (!phoneMap[o.customer_phone]) {
+      phoneMap[o.customer_phone] = { count: 0, totalSpent: 0, name: o.customer_name };
+    }
+    phoneMap[o.customer_phone].count += 1;
+    phoneMap[o.customer_phone].totalSpent += Number(o.grand_total || 0);
+  });
+
+  const duplicateCustomersCount = Object.values(phoneMap).filter(c => c.count > 1).length;
+
+  res.json({
+    totalOrders: all.length,
+    totalRevenue,
+    todayOrders,
+    todayRevenue,
+    pending: all.filter(o => o.order_status === 'pending').length,
+    processing: all.filter(o => o.order_status === 'processing').length,
+    shipped: all.filter(o => o.order_status === 'shipped').length,
+    delivered: all.filter(o => o.order_status === 'delivered').length,
+    cancelled: all.filter(o => o.order_status === 'cancelled').length,
+    incompleteCount: IN_MEMORY_INCOMPLETE.length,
+    duplicateCustomersCount,
+    topCustomers: Object.entries(phoneMap).map(([phone, data]) => ({ phone, ...data })).sort((a,b) => b.totalSpent - a.totalSpent).slice(0, 5)
+  });
+});
+
 app.get('/api/admin/metrics', (req: Request, res: Response) => {
   const list = IN_MEMORY_ORDERS;
   res.json({
@@ -426,28 +416,25 @@ app.get('/api/admin/metrics', (req: Request, res: Response) => {
     processing: list.filter(o => o.order_status === 'processing').length,
     shipped: list.filter(o => o.order_status === 'shipped').length,
     delivered: list.filter(o => o.order_status === 'delivered').length,
-    cancelled: list.filter(o => o.order_status === 'cancelled').length
+    cancelled: list.filter(o => o.order_status === 'cancelled').length,
+    incomplete: IN_MEMORY_INCOMPLETE.length
   });
 });
 
 app.post('/api/admin/orders/update-full', (req: Request, res: Response) => {
-  try {
-    const { order_id, customer_name, customer_phone, shipping_district, shipping_address, grand_total, order_status } = req.body;
-    const order = IN_MEMORY_ORDERS.find(o => o.id === order_id || o.order_number === order_id);
+  const { order_id, customer_name, customer_phone, shipping_district, shipping_address, grand_total, order_status } = req.body;
+  const order = IN_MEMORY_ORDERS.find(o => o.id === order_id || o.order_number === order_id);
 
-    if (order) {
-      if (customer_name) order.customer_name = customer_name;
-      if (customer_phone) order.customer_phone = customer_phone;
-      if (shipping_district) order.shipping_district = shipping_district;
-      if (shipping_address) order.shipping_address = shipping_address;
-      if (order_status) order.order_status = order_status;
-      if (grand_total) order.grand_total = Number(grand_total);
-      return res.json({ success: true, message: 'অর্ডার তথ্য আপডেট হয়েছে!' });
-    }
-    res.status(404).json({ success: false, message: 'অর্ডার পাওয়া যায়নি।' });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
+  if (order) {
+    if (customer_name) order.customer_name = customer_name;
+    if (customer_phone) order.customer_phone = customer_phone;
+    if (shipping_district) order.shipping_district = shipping_district;
+    if (shipping_address) order.shipping_address = shipping_address;
+    if (order_status) order.order_status = order_status;
+    if (grand_total) order.grand_total = Number(grand_total);
+    return res.json({ success: true });
   }
+  res.status(404).json({ success: false });
 });
 
 app.post('/api/admin/orders/update-status', (req: Request, res: Response) => {
@@ -460,43 +447,48 @@ app.post('/api/admin/orders/update-status', (req: Request, res: Response) => {
 app.post('/api/admin/orders/delete', (req: Request, res: Response) => {
   const { order_id } = req.body;
   IN_MEMORY_ORDERS = IN_MEMORY_ORDERS.filter(x => x.id !== order_id && x.order_number !== order_id);
+  IN_MEMORY_INCOMPLETE = IN_MEMORY_INCOMPLETE.filter(x => x.id !== order_id);
   res.json({ success: true });
 });
 
-// ৭. CMS টেক্সট এডিটর
 app.post('/api/admin/cms/update-single', async (req: Request, res: Response) => {
-  try {
-    const { field, value } = req.body;
-    if (field) {
-      IN_MEMORY_CMS[field] = value;
-      if (supabase) {
-        const payload: any = { id: 'master_content', [field]: value, updated_at: new Date().toISOString() };
-        await supabase.from('site_content').upsert(payload);
-      }
+  const { field, value } = req.body;
+  if (field) {
+    IN_MEMORY_CMS[field] = value;
+    if (supabase) {
+      supabase.from('site_content').upsert({ id: 'master_content', [field]: value }).catch(() => {});
     }
-    res.json({ success: true, message: 'সফলভাবে সংরক্ষিত হয়েছে!' });
-  } catch (e: any) {
-    res.json({ success: true, message: 'Saved in memory' });
   }
+  res.json({ success: true });
 });
 
-// ৮. স্পেসিফিকেশন সম্পূর্ণ তালিকা সেভ (Add New Specification Engine)
-app.post('/api/admin/cms/update-specs', async (req: Request, res: Response) => {
-  try {
-    const { specs } = req.body;
-    if (Array.isArray(specs)) {
-      IN_MEMORY_CMS.specifications_list = specs;
-      if (supabase) {
-        await supabase.from('site_content').upsert({ id: 'master_content', specifications_list: specs, updated_at: new Date().toISOString() });
-      }
+// স্পেসিফিকেশন অ্যাড ও ডিলিট API (New)
+app.post('/api/admin/specs/add', async (req: Request, res: Response) => {
+  const { text } = req.body;
+  if (text) {
+    if (!Array.isArray(IN_MEMORY_CMS.dynamic_specs)) {
+      IN_MEMORY_CMS.dynamic_specs = [];
     }
-    res.json({ success: true, message: 'স্পেসিফিকেশন সংরক্ষিত হয়েছে!' });
-  } catch (e: any) {
-    res.json({ success: true });
+    IN_MEMORY_CMS.dynamic_specs.push(text);
+    if (supabase) {
+      supabase.from('site_content').upsert({ id: 'master_content', dynamic_specs: IN_MEMORY_CMS.dynamic_specs }).catch(() => {});
+    }
   }
+  res.json({ success: true, specs: IN_MEMORY_CMS.dynamic_specs });
 });
 
-app.post('/api/admin/products/update', async (req: Request, res: Response) => {
+app.post('/api/admin/specs/delete', async (req: Request, res: Response) => {
+  const { index } = req.body;
+  if (Array.isArray(IN_MEMORY_CMS.dynamic_specs)) {
+    IN_MEMORY_CMS.dynamic_specs.splice(index, 1);
+    if (supabase) {
+      supabase.from('site_content').upsert({ id: 'master_content', dynamic_specs: IN_MEMORY_CMS.dynamic_specs }).catch(() => {});
+    }
+  }
+  res.json({ success: true, specs: IN_MEMORY_CMS.dynamic_specs });
+});
+
+app.post('/api/admin/products/update', (req: Request, res: Response) => {
   const { id, name, regular_price, price, image } = req.body;
   const p = IN_MEMORY_PRODUCTS.find(x => x.id === id);
   if (p) {
@@ -504,16 +496,12 @@ app.post('/api/admin/products/update', async (req: Request, res: Response) => {
     if (regular_price) p.regular_price = Number(regular_price);
     if (price) p.price = Number(price);
     if (image) p.image = image;
-
-    if (supabase) {
-      supabase.from('site_content').upsert({ id: 'master_content', products_json: IN_MEMORY_PRODUCTS }).catch(() => {});
-    }
     return res.json({ success: true, product: p });
   }
-  res.status(404).json({ success: false, message: 'প্রোডাক্ট পাওয়া যায়নি' });
+  res.status(404).json({ success: false });
 });
 
-app.post('/api/admin/products/add', async (req: Request, res: Response) => {
+app.post('/api/admin/products/add', (req: Request, res: Response) => {
   const { name, regular_price, price, image } = req.body;
   const newProd = {
     id: 'prod_' + Date.now(),
@@ -523,23 +511,13 @@ app.post('/api/admin/products/add', async (req: Request, res: Response) => {
     image: image || 'https://images.unsplash.com/photo-1596755094514-f87e34085b2c?auto=format&fit=crop&w=800&q=80'
   };
   IN_MEMORY_PRODUCTS.push(newProd);
-
-  if (supabase) {
-    supabase.from('site_content').upsert({ id: 'master_content', products_json: IN_MEMORY_PRODUCTS }).catch(() => {});
-  }
   res.json({ success: true, product: newProd });
 });
 
-app.post('/api/admin/products/delete', async (req: Request, res: Response) => {
+app.post('/api/admin/products/delete', (req: Request, res: Response) => {
   const { id } = req.body;
   IN_MEMORY_PRODUCTS = IN_MEMORY_PRODUCTS.filter(p => p.id !== id);
-  if (IN_MEMORY_PRODUCTS.length === 0) {
-    IN_MEMORY_PRODUCTS = [...DEFAULT_PRODUCTS];
-  }
-  if (supabase) {
-    supabase.from('site_content').upsert({ id: 'master_content', products_json: IN_MEMORY_PRODUCTS }).catch(() => {});
-  }
   res.json({ success: true });
 });
 
-app.listen(PORT, () => console.log(`Master Server live on port ${PORT}`));
+app.listen(PORT, () => console.log(`Master API live on port ${PORT}`));
