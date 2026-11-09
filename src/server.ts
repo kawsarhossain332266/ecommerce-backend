@@ -26,6 +26,10 @@ const supabaseServiceKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
 const telegramBotToken = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
 const telegramChatId = (process.env.TELEGRAM_CHAT_ID || '').trim();
 
+if (!supabaseUrl || !supabaseServiceKey) {
+  console.error('CRITICAL: Supabase credentials missing in Render environment variables!');
+}
+
 const supabase = createClient(supabaseUrl, supabaseServiceKey, {
   auth: { persistSession: false }
 });
@@ -93,9 +97,25 @@ async function sendTelegramAlert(orderData: any, items: any[]) {
 
 // ================= API ENDPOINTS =================
 
-app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }));
+// সিস্টেম ও ডাটাবেজ হেলথ চেক
+app.get('/api/admin/system-health', async (req: Request, res: Response) => {
+  try {
+    const startTime = Date.now();
+    const { count: orderCount, error } = await supabase.from('orders').select('*', { count: 'exact', head: true });
+    if (error) throw error;
+    const latency = Date.now() - startTime;
+    res.json({
+      database: 'connected',
+      latency_ms: latency,
+      total_orders_in_db: orderCount || 0,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err: any) {
+    res.status(500).json({ database: 'disconnected', error: err.message });
+  }
+});
 
-// ১. স্টোর ডেটা ফেচ
+// ১. স্টোর ও CMS কনটেন্ট সরাসরি Supabase থেকে ফেচ
 app.get('/api/store-data', async (req: Request, res: Response) => {
   try {
     const { data: dbData, error } = await supabase.from('site_content').select('*').eq('id', 'master_content').maybeSingle();
@@ -115,13 +135,13 @@ app.get('/api/store-data', async (req: Request, res: Response) => {
   }
 });
 
-// ২. কাস্টমার অর্ডার চেকআউট
+// ২. কাস্টমার অর্ডার চেকআউট (Verifiable Write-First Protocol)
 app.post('/api/checkout', async (req: Request, res: Response) => {
   try {
     const { customer_name, customer_phone, shipping_district, shipping_address, items } = req.body;
 
     if (!customer_name || !customer_phone || !shipping_address) {
-      return res.status(400).json({ success: false, error: 'সব প্রয়োজনীয় তথ্য দিন।' });
+      return res.status(400).json({ success: false, error: 'সব প্রয়োজনীয় তথ্য প্রদান করুন।' });
     }
 
     const orderItems = items && items.length > 0 ? items : [{ product_name: 'কাতুয়া - অলিভ গ্রিন', quantity: 1, total_price: 750 }];
@@ -147,6 +167,7 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
     const grandTotal = Math.max(0, subtotal - discount + delivery);
     const orderNumber = 'SO-' + Math.floor(1000 + Math.random() * 9000);
 
+    // পূর্বের ইনকমপ্লিট অর্ডার মোছা
     await supabase.from('orders').delete().eq('customer_phone', customer_phone).eq('is_incomplete', true);
 
     const orderRecord = {
@@ -159,13 +180,15 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
       discount_amount: discount,
       delivery_charge: delivery,
       grand_total: grandTotal,
-      order_status: 'pending',
+      order_status: 'new',
       is_incomplete: false
     };
 
+    // ১. Supabase orders টেবিলে স্থায়ী ইনসার্ট
     const { data: savedOrder, error: orderError } = await supabase.from('orders').insert(orderRecord).select().single();
     if (orderError) throw orderError;
 
+    // ২. Supabase order_items টেবিলে ইনসার্ট
     if (savedOrder) {
       const itemsPayload = orderItems.map((it: any) => ({
         order_id: savedOrder.id,
@@ -178,6 +201,34 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
       await supabase.from('order_items').insert(itemsPayload);
     }
 
+    // ৩. কাস্টমার ডিরেক্টরি প্রোফাইল স্বয়ংক্রিয়ভাবে তৈরি বা আপডেট
+    try {
+      const { data: existCust } = await supabase.from('customers').select('*').eq('customer_phone', customer_phone).maybeSingle();
+      if (existCust) {
+        await supabase.from('customers').update({
+          customer_name,
+          shipping_district: isDhaka ? 'ঢাকা' : 'ঢাকার বাইরে',
+          shipping_address,
+          total_orders: (existCust.total_orders || 1) + 1,
+          total_spent: Number(existCust.total_spent || 0) + grandTotal,
+          updated_at: new Date().toISOString()
+        }).eq('id', existCust.id);
+      } else {
+        await supabase.from('customers').insert({
+          customer_phone,
+          customer_name,
+          shipping_district: isDhaka ? 'ঢাকা' : 'ঢাকার বাইরে',
+          shipping_address,
+          total_orders: 1,
+          total_spent: grandTotal,
+          customer_category: 'Normal Customer',
+          customer_rating: 5
+        });
+      }
+    } catch (custErr) {
+      console.warn('Customer upsert notification:', custErr);
+    }
+
     sendTelegramAlert(orderRecord, orderItems);
 
     res.json({
@@ -186,6 +237,7 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
       grand_total: grandTotal
     });
   } catch (err: any) {
+    console.error('Checkout failed:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -267,10 +319,79 @@ app.get('/api/admin/orders', async (req: Request, res: Response) => {
   }
 });
 
-// ৫. কাস্টমার ম্যানেজমেন্ট ডেটাবেস সিঙ্ক API (NEW)
+// ৫. লাইভ ড্যাশবোর্ড মেট্রিকস সরাসরি PostgreSQL থেকে
+app.get('/api/admin/metrics', async (req: Request, res: Response) => {
+  try {
+    const { data: allOrders, error: orderErr } = await supabase.from('orders').select('order_status, is_incomplete, grand_total, created_at');
+    if (orderErr) throw orderErr;
+
+    const { data: allCusts, error: custErr } = await supabase.from('customers').select('customer_category');
+    if (custErr) throw custErr;
+
+    const all = allOrders || [];
+    const valid = all.filter(o => !o.is_incomplete);
+    const incomplete = all.filter(o => o.is_incomplete);
+    const custs = allCusts || [];
+
+    const todayStr = new Date().toISOString().slice(0, 10);
+    let totalSales = 0;
+    let todayOrdersCount = 0;
+
+    valid.forEach(o => {
+      totalSales += Number(o.grand_total || 0);
+      if (o.created_at && o.created_at.startsWith(todayStr)) {
+        todayOrdersCount++;
+      }
+    });
+
+    res.json({
+      total: valid.length,
+      today: todayOrdersCount,
+      new: valid.filter(o => o.order_status === 'new').length,
+      pending: valid.filter(o => o.order_status === 'pending').length,
+      confirmed: valid.filter(o => o.order_status === 'confirmed').length,
+      processing: valid.filter(o => o.order_status === 'processing').length,
+      shipped: valid.filter(o => o.order_status === 'shipped').length,
+      delivered: valid.filter(o => o.order_status === 'delivered').length,
+      cancelled: valid.filter(o => o.order_status === 'cancelled').length,
+      incomplete: incomplete.length,
+      total_sales: totalSales,
+      total_customers: custs.length,
+      good_customers: custs.filter(c => c.customer_category === 'Good Customer').length,
+      bad_customers: custs.filter(c => c.customer_category === 'Bad Customer').length,
+      rated_customers: custs.filter(c => c.customer_category === 'Rated Customer').length
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ৬. রিয়েল-টাইম নতুন অর্ডার নোটিফিকেশন এন্ডপয়েন্ট (Polling / Alert Engine)
+app.get('/api/admin/poll-new-orders', async (req: Request, res: Response) => {
+  try {
+    const since = req.query.since ? String(req.query.since) : new Date(Date.now() - 15000).toISOString();
+    const { data, error } = await supabase.from('orders').select('*').eq('is_incomplete', false).gt('created_at', since).order('created_at', { ascending: false });
+    if (error) throw error;
+    res.json({ new_orders: data || [] });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ৭. কাস্টমার ডিরেক্টরি ফেচ
 app.get('/api/admin/customers', async (req: Request, res: Response) => {
   try {
-    const { data, error } = await supabase.from('customer_profiles').select('*').order('updated_at', { ascending: false });
+    const { category, search } = req.query;
+    let query = supabase.from('customers').select('*').order('updated_at', { ascending: false });
+
+    if (category && category !== 'all') {
+      query = query.eq('customer_category', category);
+    }
+    if (search) {
+      query = query.or(`customer_name.ilike.%${search}%,customer_phone.ilike.%${search}%`);
+    }
+
+    const { data, error } = await query;
     if (error) throw error;
     res.json({ customers: data || [] });
   } catch (e: any) {
@@ -278,112 +399,42 @@ app.get('/api/admin/customers', async (req: Request, res: Response) => {
   }
 });
 
-app.post('/api/admin/customers/set-status', async (req: Request, res: Response) => {
+// ৮. কাস্টমার ক্যাটাগরি ও রেটিং আপডেট
+app.post('/api/admin/customers/update-rating', async (req: Request, res: Response) => {
   try {
-    const { customer_phone, customer_name, customer_type, note } = req.body;
-    if (!customer_phone) return res.status(400).json({ error: 'ফোন নম্বর প্রয়োজন' });
+    const { customer_id, customer_category, customer_rating, customer_notes } = req.body;
+    const updateObj: Record<string, any> = { updated_at: new Date().toISOString() };
+    if (customer_category !== undefined) updateObj.customer_category = customer_category;
+    if (customer_rating !== undefined) updateObj.customer_rating = Number(customer_rating);
+    if (customer_notes !== undefined) updateObj.customer_notes = customer_notes;
 
-    const payload = {
-      customer_phone,
-      customer_name: customer_name || '',
-      customer_type: customer_type || '',
-      note: note || '',
-      updated_at: new Date().toISOString()
-    };
-
-    const { data, error } = await supabase.from('customer_profiles').upsert(payload, { onConflict: 'customer_phone' }).select();
+    const { error } = await supabase.from('customers').update(updateObj).eq('id', customer_id);
     if (error) throw error;
-    res.json({ success: true, customer: data });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.post('/api/admin/customers/migrate-batch', async (req: Request, res: Response) => {
-  try {
-    const { records } = req.body;
-    if (Array.isArray(records) && records.length > 0) {
-      const cleanRecords = records.map((r: any) => ({
-        customer_phone: r.customer_phone,
-        customer_name: r.customer_name || '',
-        customer_type: r.customer_type || '',
-        note: r.note || '',
-        updated_at: new Date().toISOString()
-      }));
-      await supabase.from('customer_profiles').upsert(cleanRecords, { onConflict: 'customer_phone' });
-    }
     res.json({ success: true });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
+// ৯. কাস্টমার ডিলিট (জিরো ডাটা লস গ্যারান্টি: অর্ডার হিস্ট্রি কখনো ডিলিট হবে না)
 app.post('/api/admin/customers/delete', async (req: Request, res: Response) => {
   try {
-    const { customer_phone } = req.body;
-    const { error } = await supabase.from('customer_profiles').delete().eq('customer_phone', customer_phone);
+    const { customer_id } = req.body;
+    const { error } = await supabase.from('customers').delete().eq('id', customer_id);
+    if (error) throw error;
+    res.json({ success: true, message: 'কাস্টমার প্রোফাইল রিমুভ হয়েছে। পূর্ববর্তী সব অর্ডার অক্ষত রয়েছে।' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ১০. অর্ডার স্ট্যাটাস ও তথ্য আপডেট
+app.post('/api/admin/orders/update-status', async (req: Request, res: Response) => {
+  try {
+    const { order_id, status } = req.body;
+    const { error } = await supabase.from('orders').update({ order_status: status, updated_at: new Date().toISOString() }).eq('id', order_id);
     if (error) throw error;
     res.json({ success: true });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ৬. অর্ডার সেভ (স্ট্যাটাস ও কাস্টমার চিহ্ন একসাথে বা আলাদা সেভ)
-app.post('/api/admin/orders/save-order-changes', async (req: Request, res: Response) => {
-  try {
-    const { order_id, status, customer_type } = req.body;
-    const updateObj: Record<string, any> = {};
-
-    if (status) updateObj.order_status = status;
-    if (customer_type !== undefined) updateObj.customer_type = customer_type;
-
-    const { data, error } = await supabase.from('orders').update(updateObj).eq('id', order_id).select();
-    if (error) throw error;
-    res.json({ success: true, order: data });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ৭. অন্যান্য প্রয়োজনীয় রুটসমূহ (অপরিবর্তিত)
-app.get('/api/admin/analytics', async (req: Request, res: Response) => {
-  try {
-    const { data: allOrders, error } = await supabase.from('orders').select('*').or('is_incomplete.is.null,is_incomplete.eq.false');
-    if (error) throw error;
-
-    const all = allOrders || [];
-    let totalRevenue = 0;
-    all.forEach(o => totalRevenue += Number(o.grand_total || 0));
-
-    res.json({
-      totalOrders: all.length,
-      totalRevenue,
-      pending: all.filter(o => o.order_status === 'pending').length,
-      processing: all.filter(o => o.order_status === 'processing').length,
-      shipped: all.filter(o => o.order_status === 'shipped').length,
-      delivered: all.filter(o => o.order_status === 'delivered').length,
-      cancelled: all.filter(o => o.order_status === 'cancelled').length
-    });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.get('/api/admin/metrics', async (req: Request, res: Response) => {
-  try {
-    const { data: allOrders } = await supabase.from('orders').select('order_status, is_incomplete');
-    const all = allOrders || [];
-    const valid = all.filter(o => !o.is_incomplete);
-    res.json({
-      total: valid.length,
-      pending: valid.filter(o => o.order_status === 'pending').length,
-      processing: valid.filter(o => o.order_status === 'processing').length,
-      shipped: valid.filter(o => o.order_status === 'shipped').length,
-      delivered: valid.filter(o => o.order_status === 'delivered').length,
-      cancelled: valid.filter(o => o.order_status === 'cancelled').length,
-      incomplete: all.filter(o => o.is_incomplete).length
-    });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -398,23 +449,13 @@ app.post('/api/admin/orders/update-full', async (req: Request, res: Response) =>
       shipping_district,
       shipping_address,
       grand_total: Number(grand_total),
-      order_status
+      order_status,
+      updated_at: new Date().toISOString()
     }).eq('id', order_id);
     if (error) throw error;
     res.json({ success: true });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.post('/api/admin/orders/update-status', async (req: Request, res: Response) => {
-  try {
-    const { order_id, status } = req.body;
-    const { error } = await supabase.from('orders').update({ order_status: status }).eq('id', order_id);
-    if (error) throw error;
-    res.json({ success: true });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -521,4 +562,4 @@ app.post('/api/admin/products/delete', async (req: Request, res: Response) => {
   }
 });
 
-app.listen(PORT, () => console.log(`Shekder Online Server Live on port ${PORT}`));
+app.listen(PORT, () => console.log(`Enterprise Persistent Server live on port ${PORT}`));
