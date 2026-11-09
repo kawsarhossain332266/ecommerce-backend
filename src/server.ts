@@ -34,7 +34,7 @@ if (!supabaseUrl || !supabaseServiceKey) {
 // This prevents checkout from waiting forever when the database/network stalls.
 const supabaseFetch: typeof fetch = async (input, init) => {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 8000);
+  const timeoutId = setTimeout(() => controller.abort(), 20000);
   const upstreamSignal = init?.signal;
   const abortFromUpstream = () => controller.abort();
 
@@ -251,32 +251,75 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
     }
     const grandTotal = Math.max(0, subtotal - discount + delivery);
 
-    // Timestamp + random suffix: short random-number collision avoided.
-    const orderNumber = 'SO-' + Date.now().toString(36).toUpperCase() + '-' +
-      Math.random().toString(36).slice(2, 7).toUpperCase();
+    // Stable order number makes retries of the same browser request idempotent.
+    // The storefront keeps client_request_id until the server confirms success.
+    const orderNumber = 'SO-' + requestId.slice(0, 40).toUpperCase();
 
-    checkoutStage = 'insert_order';
-    console.log(`[${requestId}] Inserting order ${orderNumber}`);
-    const { data: savedOrder, error: orderError } = await supabase
+    checkoutStage = 'check_existing_order';
+    const { data: priorOrder, error: priorOrderError } = await supabase
       .from('orders')
-      .insert({
-        order_number: orderNumber,
-        customer_name,
-        customer_phone,
-        shipping_district: isDhaka ? 'ঢাকা' : shipping_district,
-        shipping_address,
-        subtotal,
-        discount_amount: discount,
-        delivery_charge: delivery,
-        grand_total: grandTotal,
-        payment_method: 'cod',
-        order_status: 'new',
-        is_incomplete: false
-      })
-      .select()
-      .single();
+      .select('*')
+      .eq('order_number', orderNumber)
+      .maybeSingle();
+    if (priorOrderError) throw priorOrderError;
 
-    if (orderError) throw orderError;
+    let savedOrder: any = priorOrder || null;
+    const isRetryOfSavedOrder = Boolean(priorOrder);
+
+    if (savedOrder) {
+      const { data: priorItems, error: priorItemsError } = await supabase
+        .from('order_items')
+        .select('id')
+        .eq('order_id', savedOrder.id)
+        .limit(1);
+      if (priorItemsError) throw priorItemsError;
+
+      if (priorItems && priorItems.length > 0) {
+        return res.status(200).json({
+          success: true,
+          order_number: savedOrder.order_number,
+          grand_total: Number(savedOrder.grand_total || grandTotal),
+          message: 'এই অর্ডারটি আগেই গ্রহণ করা হয়েছে।'
+        });
+      }
+    } else {
+      checkoutStage = 'insert_order';
+      console.log(`[${requestId}] Inserting order ${orderNumber}`);
+      const { data: insertedOrder, error: orderError } = await supabase
+        .from('orders')
+        .insert({
+          order_number: orderNumber,
+          customer_name,
+          customer_phone,
+          shipping_district: isDhaka ? 'ঢাকা' : shipping_district,
+          shipping_address,
+          subtotal,
+          discount_amount: discount,
+          delivery_charge: delivery,
+          grand_total: grandTotal,
+          payment_method: 'cod',
+          order_status: 'new',
+          is_incomplete: false
+        })
+        .select()
+        .single();
+
+      if (orderError) {
+        // Two identical submissions may arrive simultaneously. Reuse the first row.
+        if (orderError.code === '23505') {
+          const { data: racedOrder, error: racedLookupError } = await supabase
+            .from('orders').select('*').eq('order_number', orderNumber).maybeSingle();
+          if (racedLookupError || !racedOrder) throw orderError;
+          savedOrder = racedOrder;
+        } else {
+          throw orderError;
+        }
+      } else {
+        savedOrder = insertedOrder;
+      }
+    }
+
+    if (!savedOrder?.id) throw new Error('অর্ডার তৈরি হয়েছে কি না যাচাই করা যায়নি।');
     savedOrderId = savedOrder.id;
 
     checkoutStage = 'insert_order_items';
@@ -291,9 +334,12 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
     }));
     const { error: itemsError } = await supabase.from('order_items').insert(itemsPayload);
     if (itemsError) {
-      // Do not leave an order that appears complete without its line items.
-      await supabase.from('orders').delete().eq('id', savedOrder.id);
-      savedOrderId = null;
+      // Only roll back an order created by this attempt. Keep an existing
+      // order row so a retry can finish writing its missing line items.
+      if (!isRetryOfSavedOrder) {
+        await supabase.from('orders').delete().eq('id', savedOrder.id);
+        savedOrderId = null;
+      }
       throw itemsError;
     }
 
