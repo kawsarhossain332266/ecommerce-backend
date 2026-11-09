@@ -2,7 +2,7 @@ import express, { Request, Response } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
-import { createHmac, timingSafeEqual, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 
 dotenv.config();
 
@@ -26,38 +26,6 @@ const supabaseUrl = getSanitizedSupabaseUrl();
 const supabaseServiceKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
 const telegramBotToken = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
 const telegramChatId = (process.env.TELEGRAM_CHAT_ID || '').trim();
-// Backward-compatible legacy login: keep the existing Admin Panel password.
-// ADMIN_PASSWORD can override it later, but is not required for this deployment.
-const adminPassword = (process.env.ADMIN_PASSWORD || 'admin123').trim();
-// Reuse the existing private Supabase service-role key as the signing secret when
-// ADMIN_TOKEN_SECRET is not configured, so no new Render variable is required.
-const adminTokenSecret = (process.env.ADMIN_TOKEN_SECRET || supabaseServiceKey).trim();
-
-function makeAdminToken(): string {
-  const payload = Buffer.from(JSON.stringify({ exp: Date.now() + 12 * 60 * 60 * 1000 })).toString('base64url');
-  const signature = createHmac('sha256', adminTokenSecret).update(payload).digest('base64url');
-  return `${payload}.${signature}`;
-}
-
-function isValidAdminToken(token: string): boolean {
-  try {
-    const [payload, signature] = token.split('.');
-    if (!payload || !signature || !adminTokenSecret) return false;
-    const expected = createHmac('sha256', adminTokenSecret).update(payload).digest();
-    const received = Buffer.from(signature, 'base64url');
-    if (expected.length !== received.length || !timingSafeEqual(expected, received)) return false;
-    const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-    return Number(decoded.exp) > Date.now();
-  } catch { return false; }
-}
-
-function adminAuthMiddleware(req: Request, res: Response, next: any) {
-  const header = String(req.headers.authorization || '');
-  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
-  if (!isValidAdminToken(token)) return res.status(401).json({ success: false, error: 'Unauthorized: আবার লগইন করুন।' });
-  next();
-}
-
 if (!supabaseUrl || !supabaseServiceKey) {
   console.error('CRITICAL: Supabase credentials missing in Render environment variables!');
 }
@@ -127,21 +95,8 @@ async function sendTelegramAlert(orderData: any, items: any[]) {
   }
 }
 
-// Admin login: legacy password remains supported; no new Render variables required
-app.post('/api/admin/login', (req: Request, res: Response) => {
-  if (!adminPassword || !adminTokenSecret) {
-    return res.status(503).json({ success: false, error: 'Admin login configuration unavailable. Check existing Supabase server credentials.' });
-  }
-  const supplied = Buffer.from(String(req.body?.password || ''));
-  const expected = Buffer.from(adminPassword);
-  if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
-    return res.status(401).json({ success: false, error: 'ভুল অ্যাডমিন পাসওয়ার্ড।' });
-  }
-  return res.json({ success: true, token: makeAdminToken(), expires_in: 43200 });
-});
-
-// Login ছাড়া সব Admin API-তে signed bearer token বাধ্যতামূলক
-app.use('/api/admin', adminAuthMiddleware);
+// Legacy Admin Panel login is handled by the existing Blogger login form.
+// Keep existing API routes compatible with the previous deployment.
 
 app.get('/', (_req: Request, res: Response) => res.json({ service:'Shekder Online API', status:'ok' }));
 
