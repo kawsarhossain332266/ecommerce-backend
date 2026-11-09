@@ -117,22 +117,26 @@ async function sendTelegramAlert(orderData: any, items: any[]) {
 
 // Database connectivity probe for Render troubleshooting.
 app.get('/api/health', async (_req: Request, res: Response) => {
+  const checks: Record<string, string> = {};
   try {
     const started = Date.now();
-    const { error } = await supabase
-      .from('site_content')
-      .select('id')
-      .eq('id', 'master_content')
-      .maybeSingle();
-    if (error) throw error;
-    return res.json({ ok: true, database: 'connected', latency_ms: Date.now() - started });
+    const { error: contentError } = await supabase.from('site_content').select('id').eq('id', 'master_content').maybeSingle();
+    if (contentError) throw new Error('site_content: ' + contentError.message);
+    checks.site_content = 'ok';
+
+    // Check the actual checkout tables and columns, not only the CMS table.
+    const { error: ordersError } = await supabase.from('orders').select('id,order_number,customer_name,customer_phone,shipping_district,shipping_address,subtotal,delivery_charge,discount_amount,grand_total,payment_method,order_status,is_incomplete').limit(1);
+    if (ordersError) throw new Error('orders table/schema: ' + ordersError.message);
+    checks.orders = 'ok';
+
+    const { error: itemsError } = await supabase.from('order_items').select('id,order_id,product_name,size,quantity,unit_price,total_price,image_url').limit(1);
+    if (itemsError) throw new Error('order_items table/schema: ' + itemsError.message);
+    checks.order_items = 'ok';
+
+    return res.json({ ok: true, database: 'connected', checkout_tables: checks, latency_ms: Date.now() - started });
   } catch (err: any) {
-    console.error('Health check failed:', err);
-    return res.status(503).json({
-      ok: false,
-      database: 'unavailable',
-      error: err?.message || 'Database connection failed'
-    });
+    console.error('[HEALTH CHECK FAILED]', err?.message || err);
+    return res.status(503).json({ ok: false, database: 'unavailable', checkout_tables: checks, error: err?.message || 'Database connection failed' });
   }
 });
 
@@ -179,9 +183,15 @@ app.get('/api/store-data', async (req: Request, res: Response) => {
 // ২. কাস্টমার অর্ডার চেকআউট (validated write-first flow)
 app.post('/api/checkout', async (req: Request, res: Response) => {
   let savedOrderId: string | null = null;
+  let checkoutStage = 'request_received';
+  const requestId = String(req.body?.client_request_id || ('CHK-' + Date.now().toString(36).toUpperCase())).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+  console.log(`[${requestId}] Checkout request received`);
   try {
+    checkoutStage = 'validation';
     const customer_name = String(req.body?.customer_name || '').trim();
-    const customer_phone = String(req.body?.customer_phone || '').replace(/\s+/g, '');
+    const rawPhone = String(req.body?.customer_phone || '').trim();
+    const bnDigits = '০১২৩৪৫৬৭৮৯';
+    const customer_phone = rawPhone.replace(/[০-৯]/g, (d: string) => String(bnDigits.indexOf(d))).replace(/[\s-]/g, '').replace(/^\+?88/, '');
     const shipping_district = String(req.body?.shipping_district || '').trim();
     const shipping_address = String(req.body?.shipping_address || '').trim();
     const items = req.body?.items;
@@ -215,6 +225,7 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
     const subtotal = orderItems.reduce((sum: number, it: any) => sum + it.total_price, 0);
     const totalQty = orderItems.reduce((sum: number, it: any) => sum + it.quantity, 0);
 
+    checkoutStage = 'read_delivery_settings';
     const { data: cmsData, error: cmsError } = await supabase
       .from('site_content')
       .select('del_inside_charge, del_outside_charge')
@@ -244,6 +255,8 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
     const orderNumber = 'SO-' + Date.now().toString(36).toUpperCase() + '-' +
       Math.random().toString(36).slice(2, 7).toUpperCase();
 
+    checkoutStage = 'insert_order';
+    console.log(`[${requestId}] Inserting order ${orderNumber}`);
     const { data: savedOrder, error: orderError } = await supabase
       .from('orders')
       .insert({
@@ -266,6 +279,7 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
     if (orderError) throw orderError;
     savedOrderId = savedOrder.id;
 
+    checkoutStage = 'insert_order_items';
     const itemsPayload = orderItems.map((it: any) => ({
       order_id: savedOrder.id,
       product_name: it.product_name,
@@ -283,6 +297,7 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
       throw itemsError;
     }
 
+    checkoutStage = 'update_customer_directory';
     // Customer directory is maintained independently from the order history.
     const { data: existCust, error: customerReadError } = await supabase
       .from('customers').select('*').eq('customer_phone', customer_phone).maybeSingle();
@@ -312,6 +327,8 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
       if (customerInsertError) console.warn('Customer insert warning:', customerInsertError.message);
     }
 
+    checkoutStage = 'send_response';
+    console.log(`[${requestId}] Checkout saved successfully: ${orderNumber}`);
     // Notification is best-effort; saved order is not rolled back by Telegram downtime.
     sendTelegramAlert({
       ...savedOrder,
@@ -332,7 +349,7 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
       message: 'অর্ডার সফলভাবে গ্রহণ করা হয়েছে।'
     });
   } catch (err: any) {
-    console.error('Checkout failed:', err);
+    console.error(`[${requestId}] Checkout failed at stage=${checkoutStage}:`, err?.message || err, err?.details || '', err?.hint || '');
     const rawMessage = String(err?.message || '');
     const isTimeout = err?.name === 'AbortError' || /abort|timeout|timed out/i.test(rawMessage);
     return res.status(isTimeout ? 504 : 500).json({
