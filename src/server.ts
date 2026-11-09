@@ -30,8 +30,28 @@ if (!supabaseUrl || !supabaseServiceKey) {
   console.error('CRITICAL: Supabase credentials missing in Render environment variables!');
 }
 
+// Every Supabase HTTP request must finish or fail within 12 seconds.
+// This prevents checkout from waiting forever when the database/network stalls.
+const supabaseFetch: typeof fetch = async (input, init) => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8000);
+  const upstreamSignal = init?.signal;
+  const abortFromUpstream = () => controller.abort();
+
+  if (upstreamSignal?.aborted) controller.abort();
+  else upstreamSignal?.addEventListener('abort', abortFromUpstream, { once: true });
+
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+    upstreamSignal?.removeEventListener('abort', abortFromUpstream);
+  }
+};
+
 const supabase = createClient(supabaseUrl, supabaseServiceKey, {
-  auth: { persistSession: false }
+  auth: { persistSession: false },
+  global: { fetch: supabaseFetch }
 });
 
 const DEFAULT_PRODUCTS = [
@@ -94,6 +114,27 @@ async function sendTelegramAlert(orderData: any, items: any[]) {
     }).catch(() => {});
   }
 }
+
+// Database connectivity probe for Render troubleshooting.
+app.get('/api/health', async (_req: Request, res: Response) => {
+  try {
+    const started = Date.now();
+    const { error } = await supabase
+      .from('site_content')
+      .select('id')
+      .eq('id', 'master_content')
+      .maybeSingle();
+    if (error) throw error;
+    return res.json({ ok: true, database: 'connected', latency_ms: Date.now() - started });
+  } catch (err: any) {
+    console.error('Health check failed:', err);
+    return res.status(503).json({
+      ok: false,
+      database: 'unavailable',
+      error: err?.message || 'Database connection failed'
+    });
+  }
+});
 
 // ================= API ENDPOINTS =================
 
@@ -292,9 +333,13 @@ app.post('/api/checkout', async (req: Request, res: Response) => {
     });
   } catch (err: any) {
     console.error('Checkout failed:', err);
-    return res.status(500).json({
+    const rawMessage = String(err?.message || '');
+    const isTimeout = err?.name === 'AbortError' || /abort|timeout|timed out/i.test(rawMessage);
+    return res.status(isTimeout ? 504 : 500).json({
       success: false,
-      error: err?.message || 'অর্ডার সংরক্ষণ করা যায়নি। অনুগ্রহ করে আবার চেষ্টা করুন।'
+      error: isTimeout
+        ? 'ডাটাবেজ থেকে সময়মতো উত্তর পাওয়া যায়নি। অর্ডার সংরক্ষণ সম্পন্ন হয়নি; অনুগ্রহ করে কিছুক্ষণ পর আবার চেষ্টা করুন।'
+        : (rawMessage || 'অর্ডার সংরক্ষণ করা যায়নি। অনুগ্রহ করে আবার চেষ্টা করুন।')
     });
   }
 });
